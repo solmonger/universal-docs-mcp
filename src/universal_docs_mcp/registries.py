@@ -6,6 +6,7 @@ Supports: PyPI (Python), npm (JavaScript/TypeScript), crates.io (Rust)
 import httpx
 from dataclasses import dataclass
 from typing import Optional
+from packaging.version import Version, InvalidVersion
 
 
 @dataclass
@@ -33,9 +34,15 @@ async def fetch_pypi(package: str) -> Optional[PackageInfo]:
         # Find latest stable version (skip pre-releases)
         stable = info["version"]
         releases = data.get("releases", {})
-        for ver in sorted(releases.keys(), reverse=True):
-            # Skip pre-release markers
-            if any(tag in ver for tag in ["a", "b", "rc", "dev", "alpha", "beta"]):
+        # Parse and sort by actual version semantics, not lexicographic order
+        parsed = []
+        for ver in releases:
+            try:
+                parsed.append((Version(ver), ver))
+            except InvalidVersion:
+                continue
+        for v, ver in sorted(parsed, reverse=True):
+            if v.is_prerelease:
                 continue
             if releases[ver]:  # has actual files
                 stable = ver

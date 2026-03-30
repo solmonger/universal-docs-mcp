@@ -4,6 +4,7 @@ After getting package metadata from registries.py, this module
 fetches the actual documentation content from docs URLs.
 """
 
+import os
 import re
 from typing import Optional
 import httpx
@@ -22,10 +23,15 @@ async def fetch_readme_from_github(repo_url: str) -> Optional[str]:
     repo_path = match.group(1).rstrip("/")
     api_url = f"https://api.github.com/repos/{repo_path}/readme"
 
+    headers = {"Accept": "application/vnd.github.raw+json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             api_url,
-            headers={"Accept": "application/vnd.github.raw+json"},
+            headers=headers,
         )
         if resp.status_code == 200:
             content = resp.text
