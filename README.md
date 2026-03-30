@@ -6,6 +6,12 @@ MCP server that fetches latest **stable release** documentation for any package.
 
 LLMs are trained on a snapshot — the docs they "know" may be months or years old. This MCP gives Claude (or any MCP client) live access to the latest stable version info and documentation for packages across Python, JavaScript/TypeScript, and Rust.
 
+## How it works
+
+<p align="center">
+  <img src="docs/flowchart.svg" alt="Universal Docs MCP workflow" width="600">
+</p>
+
 ## Features
 
 - **Multi-ecosystem** — Python (PyPI), JavaScript/TypeScript (npm), Rust (crates.io)
