@@ -4,7 +4,6 @@ TTL-based caching to avoid hammering registries on repeated queries.
 """
 
 import json
-import os
 import sqlite3
 import time
 from pathlib import Path
@@ -21,11 +20,17 @@ class DocsCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.ttl = ttl
         self.db_path = self.cache_dir / "cache.db"
+        self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        return self._conn
+
     def _init_db(self):
-        conn = sqlite3.connect(str(self.db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn = self._get_conn()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS docs_cache (
                 key TEXT PRIMARY KEY,
@@ -34,14 +39,11 @@ class DocsCache:
             )
         """)
         conn.commit()
-        conn.close()
 
     def get(self, key: str) -> Optional[dict]:
-        conn = sqlite3.connect(str(self.db_path))
-        row = conn.execute(
+        row = self._get_conn().execute(
             "SELECT value, fetched_at FROM docs_cache WHERE key = ?", (key,)
         ).fetchone()
-        conn.close()
 
         if row is None:
             return None
@@ -53,26 +55,31 @@ class DocsCache:
         return json.loads(value)
 
     def set(self, key: str, value: dict):
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._get_conn()
         conn.execute(
             "INSERT OR REPLACE INTO docs_cache (key, value, fetched_at) VALUES (?, ?, ?)",
             (key, json.dumps(value), time.time()),
         )
         conn.commit()
-        conn.close()
 
     def clear(self):
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._get_conn()
         conn.execute("DELETE FROM docs_cache")
         conn.commit()
-        conn.close()
 
     def stats(self) -> dict:
-        conn = sqlite3.connect(str(self.db_path))
+        conn = self._get_conn()
         total = conn.execute("SELECT COUNT(*) FROM docs_cache").fetchone()[0]
         valid = conn.execute(
             "SELECT COUNT(*) FROM docs_cache WHERE fetched_at > ?",
             (time.time() - self.ttl,),
         ).fetchone()[0]
-        conn.close()
         return {"total": total, "valid": valid, "expired": total - valid}
+
+    def close(self):
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def __del__(self):
+        self.close()
