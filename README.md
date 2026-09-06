@@ -25,18 +25,21 @@ LLMs are trained on a snapshot — the docs they "know" may be months or years o
 | Tool | Description |
 |------|-------------|
 | `get_package_info` | Get metadata: latest stable version, docs URL, description, license |
-| `get_package_docs` | Fetch actual documentation content (README/description) |
+| `get_package_docs` | Fetch compact, section-aware docs; supports exact versions and output budgets |
+| `get_docs_outline` | Return a section map before spending context on a large README |
+| `get_project_dependencies` | Read a supported manifest so agents can look up project-relevant versions |
 | `cache_stats` | View cache hit/miss statistics |
 
-### Example usage (from Claude Code)
+### Agent workflow
 
-```
-> What's the latest version of flask?
+The safe default is **discover the version, outline the docs, then fetch only what is needed**:
 
-> Show me the docs for the serde crate
+1. Call `get_project_dependencies` on the project's manifest.
+2. Use the returned `pinned` version when one is available; otherwise use the declared range and ask for the latest stable.
+3. Call `get_docs_outline` for the package/version.
+4. Call `get_package_docs` with the chosen section slug, or request a compact view with `max_tokens`.
 
-> What license does express use?
-```
+This keeps the upstream documentation authoritative and fresh while making the model-facing representation smaller and less noisy. The server caches the raw source separately from the compact view, so changing the token budget does not require another registry request.
 
 ## Setup
 

@@ -21,6 +21,8 @@ from mcp.server import Server
 from .registries import fetch_package, REGISTRY_MAP
 from .docs_fetcher import fetch_docs_content
 from .cache import DocsCache
+from .compaction import compact, get_section, parse_sections, section_map
+from .lockfile import read_pins
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,6 +56,13 @@ async def list_tools() -> list[types.Tool]:
                 },
                 "required": ["package"],
             },
+            annotations=types.ToolAnnotations(
+                title="Get Package Info",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            ),
         ),
         types.Tool(
             name="get_package_docs",
@@ -73,14 +82,87 @@ async def list_tools() -> list[types.Tool]:
                         "description": "Language/ecosystem (auto-detected if omitted)",
                         "enum": list(set(REGISTRY_MAP.keys())),
                     },
+                    "version": {
+                        "type": "string",
+                        "description": "Exact package version. Omit for latest stable.",
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Optional section slug/title from get_docs_outline.",
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Approximate output budget for compact docs (default 1500, max 6000).",
+                        "minimum": 200,
+                        "maximum": 6000,
+                    },
                 },
                 "required": ["package"],
             },
+            annotations=types.ToolAnnotations(
+                title="Get Package Docs",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            ),
+        ),
+        types.Tool(
+            name="get_docs_outline",
+            description=(
+                "Fetch current package documentation once and return a compact section map. "
+                "Call this before requesting a specific section when the README is large. "
+                "Supports an exact version so project-pinned docs are not confused with latest."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "package": {"type": "string", "description": "Package name"},
+                    "ecosystem": {"type": "string", "description": "python, javascript/typescript, or rust"},
+                    "version": {"type": "string", "description": "Exact version; omit for latest stable"},
+                },
+                "required": ["package"],
+            },
+            annotations=types.ToolAnnotations(
+                title="Get Documentation Outline",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=True,
+            ),
+        ),
+        types.Tool(
+            name="get_project_dependencies",
+            description=(
+                "Read a local requirements.txt, pyproject.toml, package.json, Cargo.toml, or Cargo.lock "
+                "and return dependency versions/specs for pinned documentation lookup."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "manifest_path": {"type": "string", "description": "Path to a supported project manifest"},
+                },
+                "required": ["manifest_path"],
+            },
+            annotations=types.ToolAnnotations(
+                title="Read Project Dependencies",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
         ),
         types.Tool(
             name="cache_stats",
             description="Get cache statistics (total entries, valid, expired).",
             inputSchema={"type": "object", "properties": {}},
+            annotations=types.ToolAnnotations(
+                title="Cache Stats",
+                readOnlyHint=True,
+                destructiveHint=False,
+                idempotentHint=True,
+                openWorldHint=False,
+            ),
         ),
     ]
 
@@ -91,6 +173,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
         return await _handle_get_info(arguments)
     elif name == "get_package_docs":
         return await _handle_get_docs(arguments)
+    elif name == "get_docs_outline":
+        return await _handle_get_outline(arguments)
+    elif name == "get_project_dependencies":
+        return await _handle_project_dependencies(arguments)
     elif name == "cache_stats":
         stats = cache.stats()
         return [types.TextContent(type="text", text=json.dumps(stats, indent=2))]
@@ -129,49 +215,135 @@ async def _handle_get_info(args: dict) -> list[types.TextContent]:
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
-async def _handle_get_docs(args: dict) -> list[types.TextContent]:
+async def _load_document(args: dict) -> tuple[Any, str, str, bool] | None:
+    """Load raw documentation once, with version-aware caching."""
     package = args["package"]
     ecosystem = args.get("ecosystem")
-
-    cache_key = f"docs:{ecosystem or 'auto'}:{package}"
-    cached = cache.get(cache_key)
-    if cached:
-        return [types.TextContent(type="text", text=cached.get("content", "No docs cached"))]
-
-    # First get package info
+    version = args.get("version")
     info = await fetch_package(package, ecosystem)
     if not info:
-        return [types.TextContent(
-            type="text",
-            text=f"Package '{package}' not found",
-        )]
+        return None
 
-    content = await fetch_docs_content(
-        package=info.name,
-        ecosystem=info.ecosystem,
-        docs_url=info.docs_url,
-        repo_url=info.repository,
-    )
+    cache_key = f"docsraw:{info.ecosystem}:{info.name}:{version or 'latest'}"
+    cached = cache.get(cache_key)
+    if cached and cached.get("content"):
+        content = cached["content"]
+        was_cached = True
+    else:
+        content = await fetch_docs_content(
+            package=info.name,
+            ecosystem=info.ecosystem,
+            docs_url=info.docs_url,
+            repo_url=info.repository,
+            version=version,
+        )
+        if not content:
+            return info, "", "", False
+        cache.set(cache_key, {"content": content})
+        was_cached = False
 
-    if not content:
-        msg = f"No documentation content found for {info.name} ({info.ecosystem})"
-        if info.docs_url:
-            msg += f"\nDocs URL: {info.docs_url}"
-        if info.repository:
-            msg += f"\nRepository: {info.repository}"
-        return [types.TextContent(type="text", text=msg)]
-
+    shown_version = version or info.latest_stable
     header = (
-        f"# {info.name} v{info.latest_stable} ({info.ecosystem})\n"
+        f"# {info.name} v{shown_version} ({info.ecosystem})\n"
         f"License: {info.license or 'unknown'}\n"
     )
     if info.docs_url:
         header += f"Docs: {info.docs_url}\n"
     header += "\n---\n\n"
+    return info, header, content, was_cached
 
-    full_content = header + content
-    cache.set(cache_key, {"content": full_content})
-    return [types.TextContent(type="text", text=full_content)]
+
+async def _handle_get_docs(args: dict) -> list[types.TextContent]:
+    loaded = await _load_document(args)
+    if loaded is None:
+        return [types.TextContent(type="text", text=json.dumps({"found": False, "error": "package_not_found"}))]
+    info, header, raw, was_cached = loaded
+    if not raw:
+        result = {
+            "found": False,
+            "error": "documentation_not_found",
+            "package": info.name,
+            "ecosystem": info.ecosystem,
+            "version": args.get("version") or info.latest_stable,
+            "docs_url": info.docs_url,
+            "repository": info.repository,
+        }
+        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    section_key = args.get("section")
+    if section_key:
+        section = get_section(parse_sections(raw), section_key)
+        if section is None:
+            result = {
+                "found": False,
+                "error": "section_not_found",
+                "requested_section": section_key,
+                "section_map": section_map(parse_sections(raw)),
+            }
+        else:
+            body = f"{header}## {section.title}\n\n{section.body}"
+            result = {
+                "found": True,
+                "content": body,
+                "package": info.name,
+                "ecosystem": info.ecosystem,
+                "version": args.get("version") or info.latest_stable,
+                "section": section.to_dict(),
+                "cached": was_cached,
+            }
+    else:
+        budget = min(6000, max(200, int(args.get("max_tokens", 1500))))
+        result = compact(raw, budget_tokens=budget, header=header)
+        result.update({
+            "found": True,
+            "package": info.name,
+            "ecosystem": info.ecosystem,
+            "version": args.get("version") or info.latest_stable,
+            "cached": was_cached,
+        })
+    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+async def _handle_get_outline(args: dict) -> list[types.TextContent]:
+    loaded = await _load_document(args)
+    if loaded is None:
+        return [types.TextContent(type="text", text=json.dumps({"found": False, "error": "package_not_found"}))]
+    info, header, raw, was_cached = loaded
+    if not raw:
+        return [types.TextContent(type="text", text=json.dumps({
+            "found": False,
+            "error": "documentation_not_found",
+            "package": info.name,
+            "ecosystem": info.ecosystem,
+        }, indent=2))]
+    sections = parse_sections(raw)
+    return [types.TextContent(type="text", text=json.dumps({
+        "found": True,
+        "package": info.name,
+        "ecosystem": info.ecosystem,
+        "version": args.get("version") or info.latest_stable,
+        "section_map": section_map(sections),
+        "cached": was_cached,
+        "next": "Call get_package_docs with section=<slug> for one section, or omit section for a compact view.",
+    }, indent=2))]
+
+
+async def _handle_project_dependencies(args: dict) -> list[types.TextContent]:
+    path = args["manifest_path"]
+    try:
+        pins = read_pins(path)
+    except (OSError, ValueError) as exc:
+        return [types.TextContent(type="text", text=json.dumps({
+            "found": False,
+            "error": "manifest_error",
+            "message": str(exc),
+        }, indent=2))]
+    return [types.TextContent(type="text", text=json.dumps({
+        "found": True,
+        "manifest_path": path,
+        "dependencies": [pin.to_dict() for pin in pins],
+        "usage": "Use ecosystem, and pinned when present, with get_docs_outline or get_package_docs.",
+    }, indent=2))]
 
 
 async def amain():

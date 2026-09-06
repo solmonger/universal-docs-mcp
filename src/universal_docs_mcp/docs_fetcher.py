@@ -42,10 +42,15 @@ async def fetch_readme_from_github(repo_url: str) -> Optional[str]:
     return None
 
 
-async def fetch_pypi_description(package: str) -> Optional[str]:
-    """Fetch the long description from PyPI (usually README)."""
+async def fetch_pypi_description(package: str, version: Optional[str] = None) -> Optional[str]:
+    """Fetch the long description from PyPI (usually README).
+
+    When ``version`` is supplied, use PyPI's version endpoint rather than
+    silently returning the latest release's documentation.
+    """
+    endpoint = f"https://pypi.org/pypi/{package}/{version}/json" if version else f"https://pypi.org/pypi/{package}/json"
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"https://pypi.org/pypi/{package}/json")
+        resp = await client.get(endpoint)
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -55,10 +60,11 @@ async def fetch_pypi_description(package: str) -> Optional[str]:
         return desc if desc else None
 
 
-async def fetch_npm_readme(package: str) -> Optional[str]:
-    """Fetch README from npm registry."""
+async def fetch_npm_readme(package: str, version: Optional[str] = None) -> Optional[str]:
+    """Fetch README from npm registry, optionally at an exact version."""
+    endpoint = f"https://registry.npmjs.org/{package}/{version}" if version else f"https://registry.npmjs.org/{package}"
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"https://registry.npmjs.org/{package}")
+        resp = await client.get(endpoint)
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -73,6 +79,7 @@ async def fetch_docs_content(
     ecosystem: str,
     docs_url: Optional[str] = None,
     repo_url: Optional[str] = None,
+    version: Optional[str] = None,
 ) -> Optional[str]:
     """Fetch documentation content for a package.
 
@@ -83,12 +90,12 @@ async def fetch_docs_content(
     """
     # Ecosystem-specific fetchers
     if ecosystem == "python":
-        content = await fetch_pypi_description(package)
+        content = await fetch_pypi_description(package, version=version)
         if content:
             return content
 
     if ecosystem in ("javascript", "typescript"):
-        content = await fetch_npm_readme(package)
+        content = await fetch_npm_readme(package, version=version)
         if content:
             return content
 
