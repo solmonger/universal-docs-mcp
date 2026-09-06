@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -26,7 +29,7 @@ from typing import Optional
 _REQ_LINE = re.compile(
     r"^\s*(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*(?P<spec>[=<>!~]=?[^;#]*)?"
 )
-_EXACT = re.compile(r"^={1,3}\s*(?P<ver>[A-Za-z0-9][A-Za-z0-9.*+-]*)$")
+_EXACT = re.compile(r"^={1,3}\s*(?P<ver>[A-Za-z0-9][A-Za-z0-9.+-]*)$")
 
 
 @dataclass

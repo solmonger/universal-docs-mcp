@@ -163,20 +163,28 @@ def compact(
 ) -> dict:
     """Return a budgeted compact view plus the full section map.
 
-    Sections are emitted in priority order (intro/install/usage/api first,
-    then document order). Once the budget is spent, remaining sections are
-    listed by heading only so the agent knows what exists and can request it
-    via get_docs_section.
+    The final serialized content is capped as well as the section selection.
+    This matters when a header or join separators consume more than the cheap
+    per-section estimate.
     """
+    budget_tokens = max(1, int(budget_tokens))
     sections = parse_sections(markdown)
     ordered = sorted(
         enumerate(sections),
         key=lambda pair: (_priority(pair[1].title), pair[0]),
     )
 
+    # Keep the header, but do not let metadata consume more than the caller's
+    # entire budget. The server supplies a short header; this also makes the
+    # standalone helper safe for arbitrary callers.
+    header = header.strip()
+    header_limit = budget_tokens * 4
+    if len(header) > header_limit:
+        header = header[:header_limit]
+    used = estimate_tokens(header) if header else 0
+
     included: list[Section] = []
     omitted: list[Section] = []
-    used = estimate_tokens(header) if header else 0
     for _, sec in ordered:
         cost = estimate_tokens(sec.body) + 4
         if used + cost <= budget_tokens:
@@ -185,15 +193,18 @@ def compact(
         else:
             omitted.append(sec)
 
-    # keep document order inside the included body for readability
     included.sort(key=lambda s: sections.index(s))
-
     parts = []
     if header:
-        parts.append(header.strip())
+        parts.append(header)
     if included:
         parts.append("\n\n".join(sec.body for sec in included))
     body = "\n\n".join(p for p in parts if p)
+
+    # The accounting above is intentionally approximate. Apply a final hard
+    # character cap so the returned estimate cannot exceed the requested budget.
+    if estimate_tokens(body) > budget_tokens:
+        body = body[: header_limit]
 
     return {
         "content": body,

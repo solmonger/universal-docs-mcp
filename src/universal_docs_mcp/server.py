@@ -19,7 +19,7 @@ import mcp.types as types
 from mcp.server import Server
 
 from .registries import fetch_package, REGISTRY_MAP
-from .docs_fetcher import fetch_docs_content
+from .docs_fetcher import fetch_docs_content_with_provenance
 from .cache import DocsCache
 from .compaction import compact, get_section, parse_sections, section_map
 from .lockfile import read_pins
@@ -52,6 +52,10 @@ async def list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Language/ecosystem: python, javascript, typescript, rust. Auto-detected if omitted.",
                         "enum": list(set(REGISTRY_MAP.keys())),
+                    },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "Bypass the metadata cache and fetch current registry data.",
                     },
                 },
                 "required": ["package"],
@@ -96,6 +100,10 @@ async def list_tools() -> list[types.Tool]:
                         "minimum": 200,
                         "maximum": 6000,
                     },
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "Bypass the raw-document cache and fetch current documentation.",
+                    },
                 },
                 "required": ["package"],
             },
@@ -120,6 +128,10 @@ async def list_tools() -> list[types.Tool]:
                     "package": {"type": "string", "description": "Package name"},
                     "ecosystem": {"type": "string", "description": "python, javascript/typescript, or rust"},
                     "version": {"type": "string", "description": "Exact version; omit for latest stable"},
+                    "force_refresh": {
+                        "type": "boolean",
+                        "description": "Bypass the raw-document cache and fetch current documentation.",
+                    },
                 },
                 "required": ["package"],
             },
@@ -189,7 +201,7 @@ async def _handle_get_info(args: dict) -> list[types.TextContent]:
     ecosystem = args.get("ecosystem")
 
     cache_key = f"info:{ecosystem or 'auto'}:{package}"
-    cached = cache.get(cache_key)
+    cached = cache.get(cache_key) if not args.get("force_refresh") else None
     if cached:
         cached["_cached"] = True
         return [types.TextContent(type="text", text=json.dumps(cached, indent=2))]
@@ -215,8 +227,8 @@ async def _handle_get_info(args: dict) -> list[types.TextContent]:
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
-async def _load_document(args: dict) -> tuple[Any, str, str, bool] | None:
-    """Load raw documentation once, with version-aware caching."""
+async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
+    """Load raw documentation once, with version-aware caching and provenance."""
     package = args["package"]
     ecosystem = args.get("ecosystem")
     version = args.get("version")
@@ -225,39 +237,48 @@ async def _load_document(args: dict) -> tuple[Any, str, str, bool] | None:
         return None
 
     cache_key = f"docsraw:{info.ecosystem}:{info.name}:{version or 'latest'}"
-    cached = cache.get(cache_key)
+    cached = None if args.get("force_refresh") else cache.get(cache_key)
     if cached and cached.get("content"):
         content = cached["content"]
+        provenance = {
+            "source": cached.get("source", "unknown_cached_source"),
+            "source_url": cached.get("source_url", ""),
+        }
         was_cached = True
     else:
-        content = await fetch_docs_content(
+        fetched = await fetch_docs_content_with_provenance(
             package=info.name,
             ecosystem=info.ecosystem,
             docs_url=info.docs_url,
             repo_url=info.repository,
             version=version,
         )
-        if not content:
-            return info, "", "", False
-        cache.set(cache_key, {"content": content})
+        if not fetched:
+            return info, "", "", False, {}
+        content = fetched.content
+        provenance = {"source": fetched.source, "source_url": fetched.source_url}
+        cache.set(cache_key, {"content": content, **provenance})
         was_cached = False
 
     shown_version = version or info.latest_stable
     header = (
         f"# {info.name} v{shown_version} ({info.ecosystem})\n"
         f"License: {info.license or 'unknown'}\n"
+        f"Source: {provenance['source']}\n"
     )
+    if provenance.get("source_url"):
+        header += f"Source URL: {provenance['source_url']}\n"
     if info.docs_url:
         header += f"Docs: {info.docs_url}\n"
     header += "\n---\n\n"
-    return info, header, content, was_cached
+    return info, header, content, was_cached, provenance
 
 
 async def _handle_get_docs(args: dict) -> list[types.TextContent]:
     loaded = await _load_document(args)
     if loaded is None:
         return [types.TextContent(type="text", text=json.dumps({"found": False, "error": "package_not_found"}))]
-    info, header, raw, was_cached = loaded
+    info, header, raw, was_cached, provenance = loaded
     if not raw:
         result = {
             "found": False,
@@ -289,16 +310,30 @@ async def _handle_get_docs(args: dict) -> list[types.TextContent]:
                 "ecosystem": info.ecosystem,
                 "version": args.get("version") or info.latest_stable,
                 "section": section.to_dict(),
+                "source": provenance.get("source"),
+                "source_url": provenance.get("source_url"),
                 "cached": was_cached,
             }
     else:
-        budget = min(6000, max(200, int(args.get("max_tokens", 1500))))
-        result = compact(raw, budget_tokens=budget, header=header)
+        requested_budget = args.get("max_tokens", 1500)
+        if (
+            isinstance(requested_budget, bool)
+            or not isinstance(requested_budget, int)
+            or not 200 <= requested_budget <= 6000
+        ):
+            return [types.TextContent(type="text", text=json.dumps({
+                "found": False,
+                "error": "invalid_max_tokens",
+                "message": "max_tokens must be an integer from 200 through 6000",
+            }, indent=2))]
+        result = compact(raw, budget_tokens=requested_budget, header=header)
         result.update({
             "found": True,
             "package": info.name,
             "ecosystem": info.ecosystem,
             "version": args.get("version") or info.latest_stable,
+            "source": provenance.get("source"),
+            "source_url": provenance.get("source_url"),
             "cached": was_cached,
         })
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
@@ -308,7 +343,7 @@ async def _handle_get_outline(args: dict) -> list[types.TextContent]:
     loaded = await _load_document(args)
     if loaded is None:
         return [types.TextContent(type="text", text=json.dumps({"found": False, "error": "package_not_found"}))]
-    info, header, raw, was_cached = loaded
+    info, header, raw, was_cached, provenance = loaded
     if not raw:
         return [types.TextContent(type="text", text=json.dumps({
             "found": False,
@@ -323,6 +358,8 @@ async def _handle_get_outline(args: dict) -> list[types.TextContent]:
         "ecosystem": info.ecosystem,
         "version": args.get("version") or info.latest_stable,
         "section_map": section_map(sections),
+        "source": provenance.get("source"),
+        "source_url": provenance.get("source_url"),
         "cached": was_cached,
         "next": "Call get_package_docs with section=<slug> for one section, or omit section for a compact view.",
     }, indent=2))]

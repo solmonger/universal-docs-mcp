@@ -29,8 +29,9 @@ def test_section_lookup_by_slug_and_title():
 def test_requirements_are_pinned_when_exact():
     with TemporaryDirectory() as tmp:
         path = Path(tmp) / "requirements.txt"
-        path.write_text("httpx==0.27.2\nrequests>=2.0\n# comment\n")
+        path.write_text("httpx==0.27.2\nrequests>=2.0\nbackports==1.2.*\n# comment\n")
         pins = read_pins(path)
     assert pins[0].pinned == "0.27.2"
     assert pins[1].pinned is None
+    assert pins[2].pinned is None
     assert pins[0].ecosystem == "python"

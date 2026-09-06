@@ -18,7 +18,7 @@ LLMs are trained on a snapshot — the docs they "know" may be months or years o
 - **Stable releases only** — Pre-release versions (alpha, beta, RC, dev) are filtered using proper version parsing
 - **Cached** — SQLite cache with 24h TTL to avoid hammering registries
 - **GitHub-aware** — Falls back to GitHub README when registry docs aren't available; supports optional `GITHUB_TOKEN` for higher rate limits
-- **Context-efficient** — Documentation is truncated to 3000 characters to stay within LLM context budgets
+- **Context-efficient** — Raw upstream documentation is cached intact; compaction applies the requested output budget after retrieval
 
 ## Tools
 
@@ -100,7 +100,7 @@ cd universal-docs-mcp
 pip install -e .
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. On Python 3.10 the package uses the declared `tomli` compatibility dependency for TOML manifest parsing.
 
 ## Configuration
 
