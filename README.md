@@ -118,6 +118,16 @@ No scopes required — a fine-grained token with no permissions works fine. The 
 
 Documentation is cached in `~/.cache/universal-docs-mcp/cache.db` with a 24-hour TTL. Use the `cache_stats` tool to check cache state.
 
+### Retrieval guarantees and limits
+
+- An omitted version is resolved from registry metadata before fetching and caching. A new release gets a different raw-cache key; cached old text is not relabeled as new.
+- `fetched_at` is the source-fetch Unix timestamp; `cached` reports reuse. `force_refresh: true` bypasses raw cache, not a guarantee that upstream authors updated their docs.
+- This is README/registry-description retrieval, **not full API-site search or symbol verification**. A source URL is provided. Missing content is an explicit miss; transport failures/rate limits are unknown, not proof the package is absent.
+- A GitHub fallback requests the version string as a Git ref. This does **not** prove that the ref corresponds to the published package artifact. Treat it as weaker evidence; monorepos and `v`-prefixed tags may miss. No silent default-branch fallback occurs.
+- `max_tokens` bounds the **content** using a four-characters-per-token estimate. It does not bound the JSON metadata or actual model tokenization. Section responses mark truncation; do not execute a clipped code example. Use the source URL when a whole example will not fit.
+- Compaction preserves fenced code and HTML prose. Sections are ranked by simple heading rules, not an LLM or semantic search. The outline exposes omitted sections.
+- Making this MCP available in a client does not guarantee the client calls it. Prefer task-relevant retrieval over unconditional calls on every scheduled run.
+
 ## Supported Ecosystems
 
 | Ecosystem | Registry | Aliases |

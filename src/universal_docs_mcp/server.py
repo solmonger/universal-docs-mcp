@@ -5,13 +5,16 @@ Provides tools for fetching latest stable documentation for any package.
 Tools:
   get_package_info    — Get metadata (version, docs URL, description)
   get_package_docs    — Get actual documentation content
-  search_package      — Search across registries
-  get_changelog       — Get recent changes/releases
+  get_docs_outline    — Inspect available README sections
+  get_project_dependencies — Read local manifest constraints
+  cache_stats         — Inspect cache counts
 """
 
 import asyncio
 import json
 import logging
+import time
+import httpx
 from typing import Any
 
 import mcp.server.stdio
@@ -21,7 +24,7 @@ from mcp.server import Server
 from .registries import fetch_package, REGISTRY_MAP
 from .docs_fetcher import fetch_docs_content_with_provenance
 from .cache import DocsCache
-from .compaction import compact, get_section, parse_sections, section_map
+from .compaction import compact, get_section, parse_sections, section_map, estimate_tokens
 from .lockfile import read_pins
 
 logging.basicConfig(level=logging.INFO)
@@ -181,6 +184,17 @@ async def list_tools() -> list[types.Tool]:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+    try:
+        return await _dispatch_tool(name, arguments)
+    except (httpx.HTTPError, ValueError) as exc:
+        # Transport/invalid upstream data is unknown, not evidence of absence.
+        return [types.TextContent(type="text", text=json.dumps({
+            "found": None, "error": "upstream_unavailable",
+            "exception_type": type(exc).__name__, "retryable": True,
+        }))]
+
+
+async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
     if name == "get_package_info":
         return await _handle_get_info(arguments)
     elif name == "get_package_docs":
@@ -236,13 +250,15 @@ async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
     if not info:
         return None
 
-    cache_key = f"docsraw:{info.ecosystem}:{info.name}:{version or 'latest'}"
+    version = version or info.latest_stable
+    cache_key = f"docsraw-v3:{info.ecosystem}:{info.name}:{version}"
     cached = None if args.get("force_refresh") else cache.get(cache_key)
     if cached and cached.get("content"):
         content = cached["content"]
         provenance = {
             "source": cached.get("source", "unknown_cached_source"),
             "source_url": cached.get("source_url", ""),
+            "fetched_at": cached.get("fetched_at"),
         }
         was_cached = True
     else:
@@ -256,7 +272,7 @@ async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
         if not fetched:
             return info, "", "", False, {}
         content = fetched.content
-        provenance = {"source": fetched.source, "source_url": fetched.source_url}
+        provenance = {"source": fetched.source, "source_url": fetched.source_url, "fetched_at": time.time()}
         cache.set(cache_key, {"content": content, **provenance})
         was_cached = False
 
@@ -275,6 +291,12 @@ async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
 
 
 async def _handle_get_docs(args: dict) -> list[types.TextContent]:
+    requested_budget = args.get("max_tokens", 1500)
+    if isinstance(requested_budget, bool) or not isinstance(requested_budget, int) or not 200 <= requested_budget <= 6000:
+        return [types.TextContent(type="text", text=json.dumps({
+            "found": False, "error": "invalid_max_tokens",
+            "message": "max_tokens must be an integer from 200 through 6000",
+        }))]
     loaded = await _load_document(args)
     if loaded is None:
         return [types.TextContent(type="text", text=json.dumps({"found": False, "error": "package_not_found"}))]
@@ -305,27 +327,20 @@ async def _handle_get_docs(args: dict) -> list[types.TextContent]:
             body = f"{header}## {section.title}\n\n{section.body}"
             result = {
                 "found": True,
-                "content": body,
+                "content": body[:requested_budget * 4],
+                "truncated": len(body) > requested_budget * 4,
+                "tokens_included": estimate_tokens(body[:requested_budget * 4]),
+                "budget_tokens": requested_budget,
                 "package": info.name,
                 "ecosystem": info.ecosystem,
                 "version": args.get("version") or info.latest_stable,
                 "section": section.to_dict(),
                 "source": provenance.get("source"),
                 "source_url": provenance.get("source_url"),
+                "fetched_at": provenance.get("fetched_at"),
                 "cached": was_cached,
             }
     else:
-        requested_budget = args.get("max_tokens", 1500)
-        if (
-            isinstance(requested_budget, bool)
-            or not isinstance(requested_budget, int)
-            or not 200 <= requested_budget <= 6000
-        ):
-            return [types.TextContent(type="text", text=json.dumps({
-                "found": False,
-                "error": "invalid_max_tokens",
-                "message": "max_tokens must be an integer from 200 through 6000",
-            }, indent=2))]
         result = compact(raw, budget_tokens=requested_budget, header=header)
         result.update({
             "found": True,
@@ -334,6 +349,7 @@ async def _handle_get_docs(args: dict) -> list[types.TextContent]:
             "version": args.get("version") or info.latest_stable,
             "source": provenance.get("source"),
             "source_url": provenance.get("source_url"),
+                "fetched_at": provenance.get("fetched_at"),
             "cached": was_cached,
         })
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
@@ -360,6 +376,7 @@ async def _handle_get_outline(args: dict) -> list[types.TextContent]:
         "section_map": section_map(sections),
         "source": provenance.get("source"),
         "source_url": provenance.get("source_url"),
+                "fetched_at": provenance.get("fetched_at"),
         "cached": was_cached,
         "next": "Call get_package_docs with section=<slug> for one section, or omit section for a compact view.",
     }, indent=2))]

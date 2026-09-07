@@ -56,6 +56,8 @@ async def fetch_readme_from_github(repo_url: str, version: Optional[str] = None)
         resp = await client.get(api_url, headers=headers)
         if resp.status_code == 200:
             return resp.text
+        if resp.status_code != 404:
+            resp.raise_for_status()
     return None
 
 
@@ -69,6 +71,8 @@ async def fetch_pypi_description(package: str, version: Optional[str] = None) ->
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(endpoint)
         if resp.status_code != 200:
+            if resp.status_code != 404:
+                resp.raise_for_status()
             return None
         data = resp.json()
         desc = data["info"].get("description", "")
@@ -85,6 +89,8 @@ async def fetch_npm_readme(package: str, version: Optional[str] = None) -> Optio
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(endpoint)
         if resp.status_code != 200:
+            if resp.status_code != 404:
+                resp.raise_for_status()
             return None
         data = resp.json()
         readme = data.get("readme", "")

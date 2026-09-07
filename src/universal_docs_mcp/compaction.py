@@ -33,7 +33,6 @@ _NOISE_LINE = re.compile(
     r"^("
     r"\[!\[.*\]\(.*\)\]\(.*\)"          # badge: [![alt](img)](link)
     r"|!\[.*\]\(.*\)"                  # bare image
-    r"|<p\b[^>]*>.*</p>"               # inline html wrapper
     r"|<!--.*?-->"                     # html comment (single line)
     r"|-{3,}|_{3,}|\*{3,}"             # horizontal rules
     r"|<br\s*/?>"                      # stray breaks
@@ -48,15 +47,30 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _fenced_lines(markdown: str):
+    """Yield lines with fenced code protected from prose transformations."""
+    fence = None
+    for line in markdown.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        protected = fence is not None
+        if marker:
+            run, rest = marker.groups()
+            if fence is None:
+                fence = run
+                protected = True
+            elif run[0] == fence[0] and len(run) >= len(fence) and not rest.strip():
+                fence = None
+        yield line, protected
+
+
 def strip_noise(markdown: str) -> str:
     """Remove badge/image/html noise and collapse blank runs."""
     out = []
-    for line in markdown.splitlines():
-        if _NOISE_LINE.match(line.strip()):
+    for line, protected in _fenced_lines(markdown):
+        if not protected and _NOISE_LINE.match(line.strip()):
             continue
         out.append(line)
     text = "\n".join(out)
-    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -89,7 +103,6 @@ class Section:
 def parse_sections(markdown: str) -> list[Section]:
     """Split markdown into an intro chunk plus ATX-heading sections."""
     clean = strip_noise(markdown)
-    lines = clean.splitlines()
     sections: list[Section] = []
     intro_lines: list[str] = []
     current: Optional[dict] = None
@@ -112,8 +125,8 @@ def parse_sections(markdown: str) -> list[Section]:
         )
         current = None
 
-    for line in lines:
-        m = _HEADING.match(line)
+    for line, protected in _fenced_lines(clean):
+        m = None if protected else _HEADING.match(line)
         if m:
             flush()
             title = m.group(2).strip()
@@ -186,7 +199,7 @@ def compact(
     included: list[Section] = []
     omitted: list[Section] = []
     for _, sec in ordered:
-        cost = estimate_tokens(sec.body) + 4
+        cost = estimate_tokens(f"## {sec.title}\n\n{sec.body}") + 4
         if used + cost <= budget_tokens:
             included.append(sec)
             used += cost
@@ -198,17 +211,19 @@ def compact(
     if header:
         parts.append(header)
     if included:
-        parts.append("\n\n".join(sec.body for sec in included))
+        parts.append("\n\n".join(f"## {sec.title}\n\n{sec.body}" for sec in included))
     body = "\n\n".join(p for p in parts if p)
 
     # The accounting above is intentionally approximate. Apply a final hard
     # character cap so the returned estimate cannot exceed the requested budget.
-    if estimate_tokens(body) > budget_tokens:
-        body = body[: header_limit]
+    was_clipped = len(body) > header_limit
+    body = body[:header_limit]
 
     return {
         "content": body,
         "tokens_included": estimate_tokens(body),
+        "truncated": was_clipped or bool(omitted),
+        "budget_scope": "content only; character-based estimate, not model tokens or JSON metadata",
         "budget_tokens": budget_tokens,
         "sections_included": [s.slug for s in included],
         "sections_omitted": [s.slug for s in omitted],

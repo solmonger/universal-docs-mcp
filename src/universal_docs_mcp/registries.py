@@ -27,6 +27,8 @@ async def fetch_pypi(package: str) -> Optional[PackageInfo]:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(f"https://pypi.org/pypi/{package}/json")
         if resp.status_code != 200:
+            if resp.status_code != 404:
+                resp.raise_for_status()
             return None
         data = resp.json()
         info = data["info"]
@@ -69,6 +71,8 @@ async def fetch_npm(package: str) -> Optional[PackageInfo]:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(f"https://registry.npmjs.org/{package}")
         if resp.status_code != 200:
+            if resp.status_code != 404:
+                resp.raise_for_status()
             return None
         data = resp.json()
 
@@ -101,6 +105,8 @@ async def fetch_crates(package: str) -> Optional[PackageInfo]:
             headers={"User-Agent": "universal-docs-mcp/0.1.0"},
         )
         if resp.status_code != 200:
+            if resp.status_code != 404:
+                resp.raise_for_status()
             return None
         data = resp.json()
         crate = data.get("crate", {})
@@ -149,11 +155,14 @@ async def fetch_package(package: str, ecosystem: Optional[str] = None) -> Option
         return None
 
     # Try all registries in order of likelihood
+    last_error = None
     for fetcher in [fetch_pypi, fetch_npm, fetch_crates]:
         try:
             result = await fetcher(package)
             if result:
                 return result
-        except Exception:
-            continue
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
     return None
