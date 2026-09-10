@@ -1,0 +1,17 @@
+{
+  "preflight_command": [
+    "/absolute/path/to/.venv/bin/universal-docs-preflight"
+  ],
+  "request": {
+    "package": "requests",
+    "ecosystem": "python",
+    "selection": "requested",
+    "requested_version": "2.32.3",
+    "query": "timeouts retries",
+    "section_ids": ["usage"],
+    "context_max_bytes": 12000,
+    "freshness_mode": "require_check",
+    "deadline_ms": 25000
+  },
+  "timeout_ms": 25000
+}

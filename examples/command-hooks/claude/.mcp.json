@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "universal-docs": {
+      "command": "/absolute/path/to/.venv/bin/universal-docs-mcp",
+      "env": {
+        "UNIVERSAL_DOCS_CACHE_DIR": "/absolute/path/to/local-docs-cache"
+      }
+    }
+  }
+}
