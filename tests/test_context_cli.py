@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from universal_docs_mcp import context_cli
+from universal_docs_mcp.context_integrity import context_integrity
 from universal_docs_mcp.preflight import PreflightRequest, build_error_response
 
 SOURCE_HASH = "b" * 64
@@ -32,7 +33,7 @@ def request() -> PreflightRequest:
 
 def successful_result(context: str = "Fixture documentation.") -> dict:
     now = time.time()
-    return {
+    response = {
         "schema": "universal-docs.preflight/v1",
         "found": True,
         "context": context,
@@ -90,6 +91,10 @@ def successful_result(context: str = "Fixture documentation.") -> dict:
         },
         "retryable": False,
     }
+    response["receipt"]["integrity"] = context_integrity(
+        response["context"], response["receipt"]
+    )
+    return response
 
 
 def test_context_cli_uses_parse_and_run_cli_in_process(
@@ -176,6 +181,7 @@ def test_official_receipt_does_not_invent_package_identity() -> None:
     official_request = SimpleNamespace(
         model_dump=lambda **kwargs: {
             "source_id": "mcp-tools",
+            "context_max_bytes": 2048,
             "selection": "requested",
             "requested_version": "2026-07-28",
             "freshness_mode": "require_check",
@@ -200,6 +206,9 @@ def test_official_receipt_does_not_invent_package_identity() -> None:
 
     from universal_docs_mcp.context_delivery import build_context_packet
 
+    result["receipt"]["integrity"] = context_integrity(
+        result["context"], result["receipt"]
+    )
     packet = build_context_packet(official_request, result)
 
     assert 'Target source ID: "mcp-tools"' in packet

@@ -22,6 +22,7 @@ from universal_docs_mcp.command_hook import (
     load_request,
 )
 from universal_docs_mcp.context_delivery import build_context_packet
+from universal_docs_mcp.context_integrity import context_integrity
 from universal_docs_mcp.preflight import PreflightRequest
 
 SOURCE_HASH = "a" * 64
@@ -45,7 +46,7 @@ def preflight_success(
     *, context: str = "Retries and timeouts are documented here."
 ) -> dict:
     now = time.time()
-    return {
+    response = {
         "schema": "universal-docs.preflight/v1",
         "found": True,
         "context": context,
@@ -103,6 +104,10 @@ def preflight_success(
         },
         "retryable": False,
     }
+    response["receipt"]["integrity"] = context_integrity(
+        response["context"], response["receipt"]
+    )
+    return response
 
 
 def make_preflight_script(
@@ -460,10 +465,12 @@ def test_latest_receipt_must_bind_selected_version_to_latest_observed(
 
 
 def test_clipping_notice_is_inside_packet_budget() -> None:
-    packet = build_context_packet(
-        PreflightRequest.model_validate(request_data()),
-        preflight_success(context="x" * 12_000),
+    req = PreflightRequest.model_validate(
+        {**request_data(), "context_max_bytes": 12_000}
     )
+    result = preflight_success(context="x" * 12_000)
+    result["receipt"]["selection"]["budget_bytes"] = 12_000
+    packet = build_context_packet(req, result)
 
     assert len(packet.encode("utf-8")) <= 8 * 1024
     assert "Context clipped by adapter" in packet
@@ -524,6 +531,9 @@ def test_bounded_regular_file_open_is_nonblocking_against_fifo_race(
 def test_pypi_identity_comparison_preserves_upstream_token() -> None:
     response = preflight_success()
     response["receipt"]["target"]["package"] = "Fixture_Docs"
+    response["receipt"]["integrity"] = context_integrity(
+        response["context"], response["receipt"]
+    )
 
     packet = build_context_packet(
         PreflightRequest.model_validate(request_data()),

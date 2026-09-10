@@ -21,6 +21,7 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .cache import DocsCache
+from .context_integrity import context_integrity
 from .docs_fetcher import FetchedDocument, fetch_docs_content_with_provenance
 from .network import network_lifespan
 from .official_preflight import (
@@ -445,6 +446,7 @@ def _response_from_document(
         retryable=retryable,
     )
     receipt["selection"] = selection
+    receipt["integrity"] = context_integrity(context, receipt)
     return {
         "schema": SCHEMA,
         "found": True,

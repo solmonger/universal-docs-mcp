@@ -17,6 +17,8 @@ from typing import Any
 
 import pytest
 
+from universal_docs_mcp.context_integrity import context_integrity
+
 REPO = Path(__file__).parents[1]
 ADAPTER = Path(sys.executable).parent / "universal-docs-command-hook"
 EVIDENCE_DIR = Path(
@@ -44,7 +46,7 @@ def _request() -> dict[str, Any]:
 def _preflight_response() -> dict[str, Any]:
     context = "Fixture code literals for retries: a1,b2,c3,d4,e5,f6; " * 200
     now = time.time()
-    return {
+    response = {
         "schema": "universal-docs.preflight/v1",
         "found": True,
         "context": context,
@@ -102,6 +104,10 @@ def _preflight_response() -> dict[str, Any]:
         },
         "retryable": False,
     }
+    response["receipt"]["integrity"] = context_integrity(
+        response["context"], response["receipt"]
+    )
+    return response
 
 
 def _fixture_preflight(path: Path) -> Path:

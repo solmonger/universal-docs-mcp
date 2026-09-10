@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, cast
 
+from .context_integrity import context_integrity
+
 PREFLIGHT_SCHEMA = "universal-docs.preflight/v1"
 CONTEXT_SCHEMA = "universal-docs.context/v1"
 MAX_PACKET_BYTES = 8 * 1024
@@ -39,6 +41,7 @@ class _RequestIdentity:
     selection: str
     requested_version: str | None
     freshness_mode: str
+    context_max_bytes: int
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,7 @@ class _ValidatedResult:
     freshness: Mapping[str, Any]
     stale: bool
     context: str
+    integrity: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -107,6 +111,9 @@ def _request_identity(request: Any) -> _RequestIdentity:
         ):
             raise _invalid()
 
+    context_max_bytes = dumped.get("context_max_bytes")
+    if type(context_max_bytes) is not int or not 1 <= context_max_bytes <= 32_000:
+        raise _invalid()
     selection = dumped.get("selection")
     freshness_mode = dumped.get("freshness_mode")
     requested_version = dumped.get("requested_version")
@@ -138,6 +145,7 @@ def _request_identity(request: Any) -> _RequestIdentity:
         selection=selection,
         requested_version=requested_version,
         freshness_mode=freshness_mode,
+        context_max_bytes=context_max_bytes,
     )
 
 
@@ -378,11 +386,23 @@ def _validate_result(request: Any, result: Any) -> _ValidatedResult:
         raise ReceiptValidationError("preflight_no_match")
     if not context:
         raise ReceiptValidationError("preflight_empty_context")
+    actual_bytes = len(context.encode("utf-8"))
+    if (
+        actual_bytes > identity.context_max_bytes
+        or type(selection.get("context_bytes")) is not int
+        or selection["context_bytes"] != actual_bytes
+        or type(selection.get("budget_bytes")) is not int
+        or selection["budget_bytes"] != identity.context_max_bytes
+    ):
+        raise _invalid()
     if (
         trust.get("content") != "untrusted_upstream"
         or trust.get("instructions_authoritative") is not False
         or trust.get("execution_performed") is not False
     ):
+        raise _invalid()
+    verified_integrity = context_integrity(context, receipt)
+    if receipt.get("integrity") != verified_integrity:
         raise _invalid()
     return _ValidatedResult(
         request=identity,
@@ -391,6 +411,7 @@ def _validate_result(request: Any, result: Any) -> _ValidatedResult:
         freshness=freshness,
         stale=state == "stale_cache",
         context=context,
+        integrity=verified_integrity,
     )
 
 
@@ -449,6 +470,8 @@ def _format_packet(validated: _ValidatedResult) -> str:
             f"Source URL: {_quoted(_string(source.get('url'), max_bytes=4096))}",
             f"Source version binding: {_quoted_optional(source.get('version_binding'))}",
             f"Source SHA-256: {receipt}",
+            f"Selected context SHA-256: {validated.integrity['context_sha256']}",
+            "Provenance: trusted retriever; not independently publisher authenticated.",
             f"Fetched at (Unix seconds): {freshness.get('fetched_at')}",
             f"Checked at (Unix seconds): {freshness.get('checked_at')}",
             f"Latest observed version: {_quoted_optional(target.get('latest_observed'))}",
