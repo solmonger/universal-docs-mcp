@@ -17,6 +17,8 @@ Supported manifests:
 from __future__ import annotations
 
 import json
+import os
+import stat
 import re
 try:
     import tomllib
@@ -231,7 +233,39 @@ def manifest_kind(path: Path) -> Optional[str]:
     return None
 
 
-def read_pins(path: str | Path) -> list[Pin]:
+def _read_scoped(path: Path, root: Path) -> bytes:
+    """Open relative to trusted root descriptors, refusing symlink traversal.
+
+    The local manifest tool is intentionally POSIX-only until an equivalent
+    Windows handle-relative implementation is verified. Registry tools work
+    without filesystem access on all supported Python platforms.
+    """
+    if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("scoped_manifests_unsupported_platform")
+    root = root.expanduser().resolve(strict=True)
+    candidate = Path(os.path.abspath(path if path.is_absolute() else root / path))
+    parts = candidate.relative_to(root).parts
+    if not parts:
+        raise ValueError("invalid_manifest_path")
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("manifest_not_regular_file")
+            if metadata.st_size > MAX_MANIFEST_BYTES:
+                raise ValueError("manifest_too_large")
+            return stream.read(MAX_MANIFEST_BYTES + 1)
+    finally:
+        os.close(directory)
+
+
+def read_pins(path: str | Path, *, root: Optional[Path] = None) -> list[Pin]:
     p = Path(path)
     kind = manifest_kind(p)
     if kind is None:
@@ -240,8 +274,11 @@ def read_pins(path: str | Path) -> list[Pin]:
             "(expected requirements*.txt, pyproject.toml, package.json, Cargo.toml, Cargo.lock)"
         )
     parser = _PARSERS[kind]
-    with p.open("rb") as stream:
-        data = stream.read(MAX_MANIFEST_BYTES + 1)
+    if root is not None:
+        data = _read_scoped(p, root)
+    else:
+        with p.open("rb") as stream:
+            data = stream.read(MAX_MANIFEST_BYTES + 1)
     if len(data) > MAX_MANIFEST_BYTES:
         raise ValueError("manifest_too_large")
     return parser(data.decode("utf-8"), kind)

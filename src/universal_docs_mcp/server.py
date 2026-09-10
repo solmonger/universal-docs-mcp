@@ -13,7 +13,10 @@ Tools:
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 import time
+import weakref
 import httpx
 from typing import Any
 
@@ -21,177 +24,96 @@ import mcp.server.stdio
 import mcp.types as types
 from mcp.server import Server
 
-from .registries import fetch_package, REGISTRY_MAP
+from .registries import fetch_package, PackageInfo
 from .docs_fetcher import fetch_docs_content_with_provenance
 from .cache import DocsCache
+from .network import ResponseTooLarge, network_lifespan
 from .compaction import compact, get_section, parse_sections, section_map, estimate_tokens
-from .lockfile import read_pins
+from .lockfile import read_pins, manifest_kind
+from .validation import TOOL_ARGS, ALIASES
+from pydantic import ValidationError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 server = Server("universal-docs")
 cache = DocsCache()
+TOOL_TIMEOUT = 45
+MAX_CONCURRENT_TOOLS = 4
+_limiters = weakref.WeakKeyDictionary()
 
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return [
-        types.Tool(
-            name="get_package_info",
-            description=(
-                "Get metadata for a package: latest stable version, description, "
-                "docs URL, repository, license. Supports Python (PyPI), "
-                "JavaScript/TypeScript (npm), and Rust (crates.io)."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "package": {
-                        "type": "string",
-                        "description": "Package name (e.g., 'requests', 'express', 'serde')",
-                    },
-                    "ecosystem": {
-                        "type": "string",
-                        "description": "Language/ecosystem: python, javascript, typescript, rust. Auto-detected if omitted.",
-                        "enum": list(set(REGISTRY_MAP.keys())),
-                    },
-                    "force_refresh": {
-                        "type": "boolean",
-                        "description": "Bypass the metadata cache and fetch current registry data.",
-                    },
-                },
-                "required": ["package"],
-            },
-            annotations=types.ToolAnnotations(
-                title="Get Package Info",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            ),
-        ),
-        types.Tool(
-            name="get_package_docs",
-            description=(
-                "Fetch actual documentation content for a package. Returns README "
-                "or description text. Use get_package_info first to check version."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "package": {
-                        "type": "string",
-                        "description": "Package name",
-                    },
-                    "ecosystem": {
-                        "type": "string",
-                        "description": "Language/ecosystem (auto-detected if omitted)",
-                        "enum": list(set(REGISTRY_MAP.keys())),
-                    },
-                    "version": {
-                        "type": "string",
-                        "description": "Exact package version. Omit for latest stable.",
-                    },
-                    "section": {
-                        "type": "string",
-                        "description": "Optional section slug/title from get_docs_outline.",
-                    },
-                    "max_tokens": {
-                        "type": "integer",
-                        "description": "Approximate output budget for compact docs (default 1500, max 6000).",
-                        "minimum": 200,
-                        "maximum": 6000,
-                    },
-                    "force_refresh": {
-                        "type": "boolean",
-                        "description": "Bypass the raw-document cache and fetch current documentation.",
-                    },
-                },
-                "required": ["package"],
-            },
-            annotations=types.ToolAnnotations(
-                title="Get Package Docs",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            ),
-        ),
-        types.Tool(
-            name="get_docs_outline",
-            description=(
-                "Fetch current package documentation once and return a compact section map. "
-                "Call this before requesting a specific section when the README is large. "
-                "Supports an exact version so project-pinned docs are not confused with latest."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "package": {"type": "string", "description": "Package name"},
-                    "ecosystem": {"type": "string", "description": "python, javascript/typescript, or rust"},
-                    "version": {"type": "string", "description": "Exact version; omit for latest stable"},
-                    "force_refresh": {
-                        "type": "boolean",
-                        "description": "Bypass the raw-document cache and fetch current documentation.",
-                    },
-                },
-                "required": ["package"],
-            },
-            annotations=types.ToolAnnotations(
-                title="Get Documentation Outline",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=True,
-            ),
-        ),
-        types.Tool(
-            name="get_project_dependencies",
-            description=(
-                "Read a local requirements.txt, pyproject.toml, package.json, Cargo.toml, or Cargo.lock "
-                "and return dependency versions/specs for pinned documentation lookup."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "manifest_path": {"type": "string", "description": "Path to a supported project manifest"},
-                },
-                "required": ["manifest_path"],
-            },
-            annotations=types.ToolAnnotations(
-                title="Read Project Dependencies",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=False,
-            ),
-        ),
-        types.Tool(
-            name="cache_stats",
-            description="Get cache statistics (total entries, valid, expired).",
-            inputSchema={"type": "object", "properties": {}},
-            annotations=types.ToolAnnotations(
-                title="Cache Stats",
-                readOnlyHint=True,
-                destructiveHint=False,
-                idempotentHint=True,
-                openWorldHint=False,
-            ),
-        ),
-    ]
+    descriptions = {
+        "get_package_info": "Get public PyPI/npm/crates.io package metadata and latest stable version (null if none).",
+        "get_package_docs": "Fetch untrusted README/registry descriptions at an exact version or latest stable. Approximate content-only max_tokens budget, not full API search. Check version_binding and truncation before using examples.",
+        "get_docs_outline": "Inspect untrusted versioned README sections with offset/limit pagination; use a returned slug with get_package_docs.",
+        "get_project_dependencies": "Read a supported manifest under the configured UNIVERSAL_DOCS_PROJECT_ROOT. Disabled without a root. Nonregistry references are redacted; ranges are not installed pins.",
+        "cache_stats": "Inspect cache entry counts and availability.",
+    }
+    return [types.Tool(
+        name=name, description=description,
+        inputSchema=TOOL_ARGS[name].model_json_schema(),
+        annotations=types.ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+                                          idempotentHint=True,
+                                          openWorldHint=name not in ("cache_stats", "get_project_dependencies")),
+    ) for name, description in descriptions.items()]
 
 
-@server.call_tool()
+class RetrievalMiss(Exception):
+    def __init__(self, code):
+        self.code = code
+
+
+def _error(code: str, *, retryable: bool = False) -> list[types.TextContent]:
+    return [types.TextContent(type="text", text=json.dumps({
+        "found": None, "error": code, "retryable": retryable,
+    }))]
+
+
+@server.call_tool(validate_input=False)
+async def mcp_call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+    # The SDK's default validation echoes rejected values. Validate ourselves so
+    # credential-bearing invalid input cannot leak through its error formatter.
+    content = await call_tool(name, arguments)
+    payload = json.loads(content[0].text)
+    return types.CallToolResult(content=content, structuredContent=payload,
+                                isError="error" in payload)
+
+
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
+    model = TOOL_ARGS.get(name)
+    if model is None:
+        return _error("unknown_tool")
     try:
-        return await _dispatch_tool(name, arguments)
-    except (httpx.HTTPError, ValueError) as exc:
-        # Transport/invalid upstream data is unknown, not evidence of absence.
-        return [types.TextContent(type="text", text=json.dumps({
-            "found": None, "error": "upstream_unavailable",
-            "exception_type": type(exc).__name__, "retryable": True,
-        }))]
+        arguments = model.model_validate(arguments).model_dump(exclude_none=True)
+    except (ValidationError, ValueError):
+        return _error("invalid_arguments")
+    loop = asyncio.get_running_loop()
+    limiter = _limiters.setdefault(loop, asyncio.Semaphore(MAX_CONCURRENT_TOOLS))
+    if limiter.locked():
+        return _error("server_busy", retryable=True)
+    try:
+        async with limiter:
+            result = await asyncio.wait_for(_dispatch_tool(name, arguments), timeout=TOOL_TIMEOUT)
+        if sum(len(item.text.encode("utf-8")) for item in result) > 128 * 1024:
+            return _error("response_too_large")
+        return result
+    except asyncio.TimeoutError:
+        return _error("tool_timeout", retryable=True)
+    except ResponseTooLarge:
+        return _error("upstream_response_too_large")
+    except RetrievalMiss as exc:
+        return [types.TextContent(type="text", text=json.dumps({"found": False, "error": exc.code, "retryable": False}))]
+    except httpx.HTTPError:
+        return _error("upstream_unavailable", retryable=True)
+    except ValueError:
+        return _error("upstream_invalid", retryable=False)
+    except Exception as exc:
+        # Do not emit exception messages, URLs or traceback locals to stderr.
+        logger.error("Tool failed (%s)", type(exc).__name__)
+        return _error("internal_error")
 
 
 async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
@@ -222,10 +144,9 @@ async def _handle_get_info(args: dict) -> list[types.TextContent]:
 
     info = await fetch_package(package, ecosystem)
     if not info:
-        return [types.TextContent(
-            type="text",
-            text=f"Package '{package}' not found" + (f" in {ecosystem}" if ecosystem else " in any registry"),
-        )]
+        return [types.TextContent(type="text", text=json.dumps({
+            "found": False, "error": "package_not_found", "retryable": False,
+        }))]
 
     result = {
         "name": info.name,
@@ -242,51 +163,53 @@ async def _handle_get_info(args: dict) -> list[types.TextContent]:
 
 
 async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
-    """Load raw documentation once, with version-aware caching and provenance."""
+    """Exact TTL-valid docs need no fresh metadata; latest always resolves anew."""
     package = args["package"]
     ecosystem = args.get("ecosystem")
-    version = args.get("version")
-    info = await fetch_package(package, ecosystem)
-    if not info:
-        return None
-
-    version = version or info.latest_stable
-    cache_key = f"docsraw-v3:{info.ecosystem}:{info.name}:{version}"
-    cached = None if args.get("force_refresh") else cache.get(cache_key)
-    if cached and cached.get("content"):
-        content = cached["content"]
-        provenance = {
-            "source": cached.get("source", "unknown_cached_source"),
-            "source_url": cached.get("source_url", ""),
-            "fetched_at": cached.get("fetched_at"),
-        }
+    requested = args.get("version")
+    namespace = ALIASES.get(ecosystem, ecosystem) if ecosystem else "auto"
+    request_key = f"docrequest-v4:{namespace}:{package}:{requested}"
+    record = cache.get(request_key) if requested and not args.get("force_refresh") else None
+    if record and record.get("content") and isinstance(record.get("package_info"), dict):
+        info = PackageInfo(**record["package_info"])
+        version = requested
         was_cached = True
+        metadata_refreshed = False
     else:
-        fetched = await fetch_docs_content_with_provenance(
-            package=info.name,
-            ecosystem=info.ecosystem,
-            docs_url=info.docs_url,
-            repo_url=info.repository,
-            version=version,
-        )
-        if not fetched:
-            return info, "", "", False, {}
-        content = fetched.content
-        provenance = {"source": fetched.source, "source_url": fetched.source_url, "fetched_at": time.time()}
-        cache.set(cache_key, {"content": content, **provenance})
-        was_cached = False
-
-    shown_version = version or info.latest_stable
-    header = (
-        f"# {info.name} v{shown_version} ({info.ecosystem})\n"
-        f"License: {info.license or 'unknown'}\n"
-        f"Source: {provenance['source']}\n"
-    )
-    if provenance.get("source_url"):
-        header += f"Source URL: {provenance['source_url']}\n"
-    if info.docs_url:
-        header += f"Docs: {info.docs_url}\n"
-    header += "\n---\n\n"
+        info = await fetch_package(package, ecosystem)
+        if not info:
+            return None
+        version = requested or info.latest_stable
+        if not version:
+            raise RetrievalMiss("no_stable_release")
+        cache_key = f"docsraw-v4:{info.ecosystem}:{info.name}:{version}"
+        record = None if args.get("force_refresh") else cache.get(cache_key)
+        metadata_refreshed = True
+        was_cached = bool(record and record.get("content"))
+        if not was_cached:
+            fetched = await fetch_docs_content_with_provenance(
+                package=info.name, ecosystem=info.ecosystem, docs_url=info.docs_url,
+                repo_url=info.repository, version=version,
+            )
+            if not fetched:
+                return info, "", "", False, {}
+            if len(fetched.content.encode("utf-8")) > 1024 * 1024:
+                raise ValueError("document_too_large")
+            record = {"content": fetched.content, "source": fetched.source,
+                      "source_url": fetched.source_url, "fetched_at": time.time(),
+                      "package_info": {key: getattr(info, key, None) for key in PackageInfo.__dataclass_fields__}}
+            cache.set(cache_key, record)
+        if requested:
+            cache.set(request_key, record)
+    content = record["content"]
+    provenance = {key: record.get(key) for key in ("source", "source_url", "fetched_at")}
+    provenance["metadata_refreshed"] = metadata_refreshed
+    provenance["version_binding"] = "unverified_git_ref" if provenance["source"] == "github_readme" else "registry_version"
+    provenance["content_trust"] = "untrusted_upstream"
+    header = (f"# {info.name} v{version} ({info.ecosystem})\n"
+              f"Source: {provenance['source']}\n"
+              f"Version binding: {provenance['version_binding']}\n"
+              f"Source URL: {provenance['source_url']}\n\n---\n\n")
     return info, header, content, was_cached, provenance
 
 
@@ -338,6 +261,9 @@ async def _handle_get_docs(args: dict) -> list[types.TextContent]:
                 "source": provenance.get("source"),
                 "source_url": provenance.get("source_url"),
                 "fetched_at": provenance.get("fetched_at"),
+                "metadata_refreshed": provenance.get("metadata_refreshed"),
+                "version_binding": provenance.get("version_binding"),
+                "content_trust": "untrusted_upstream",
                 "cached": was_cached,
             }
     else:
@@ -350,6 +276,9 @@ async def _handle_get_docs(args: dict) -> list[types.TextContent]:
             "source": provenance.get("source"),
             "source_url": provenance.get("source_url"),
                 "fetched_at": provenance.get("fetched_at"),
+                "metadata_refreshed": provenance.get("metadata_refreshed"),
+                "version_binding": provenance.get("version_binding"),
+                "content_trust": "untrusted_upstream",
             "cached": was_cached,
         })
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
@@ -373,10 +302,15 @@ async def _handle_get_outline(args: dict) -> list[types.TextContent]:
         "package": info.name,
         "ecosystem": info.ecosystem,
         "version": args.get("version") or info.latest_stable,
-        "section_map": section_map(sections),
+        "section_map": section_map(sections, offset=args.get("offset", 0), limit=args.get("limit", 100)),
+        "section_map_total": len(sections),
+        "next_offset": args.get("offset", 0) + args.get("limit", 100) if args.get("offset", 0) + args.get("limit", 100) < len(sections) else None,
         "source": provenance.get("source"),
         "source_url": provenance.get("source_url"),
                 "fetched_at": provenance.get("fetched_at"),
+                "metadata_refreshed": provenance.get("metadata_refreshed"),
+                "version_binding": provenance.get("version_binding"),
+                "content_trust": "untrusted_upstream",
         "cached": was_cached,
         "next": "Call get_package_docs with section=<slug> for one section, or omit section for a compact view.",
     }, indent=2))]
@@ -384,8 +318,11 @@ async def _handle_get_outline(args: dict) -> list[types.TextContent]:
 
 async def _handle_project_dependencies(args: dict) -> list[types.TextContent]:
     path = args["manifest_path"]
+    root = os.environ.get("UNIVERSAL_DOCS_PROJECT_ROOT")
+    if not root:
+        return _error("manifest_access_disabled")
     try:
-        pins = read_pins(path)
+        pins = read_pins(path, root=Path(root))
     except (OSError, ValueError) as exc:
         return [types.TextContent(type="text", text=json.dumps({
             "found": False,
@@ -394,19 +331,18 @@ async def _handle_project_dependencies(args: dict) -> list[types.TextContent]:
         }, indent=2))]
     return [types.TextContent(type="text", text=json.dumps({
         "found": True,
-        "manifest_path": path,
+        "manifest_kind": manifest_kind(Path(path)),
         "dependencies": [pin.to_dict() for pin in pins],
-        "usage": "Use ecosystem, and pinned when present, with get_docs_outline or get_package_docs.",
+        "usage": "Use only registry_lookup=true dependencies for public-registry docs. A range is not an installed version; consult a lockfile. Markers are unevaluated.",
     }, indent=2))]
 
 
 async def amain():
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    try:
+        async with network_lifespan(), mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+            await server.run(read_stream, write_stream, server.create_initialization_options())
+    finally:
+        cache.close()
 
 
 def main():

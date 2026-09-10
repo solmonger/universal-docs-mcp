@@ -18,6 +18,7 @@ budget shaping, not billing accuracy.
 from __future__ import annotations
 
 import re
+import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
@@ -76,6 +77,8 @@ def strip_noise(markdown: str) -> str:
 
 def slugify(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    if len(slug) > 100:
+        slug = slug[:100] + "-" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:16]
     return slug or "section"
 
 
@@ -93,7 +96,8 @@ class Section:
     def to_dict(self) -> dict:
         return {
             "slug": self.slug,
-            "title": self.title,
+            "title": self.title[:256],
+            "title_truncated": len(self.title) > 256,
             "level": self.level,
             "chars": self.chars,
             "tokens": estimate_tokens(self.body),
@@ -153,8 +157,8 @@ def _priority(title: str) -> int:
     return len(_PRIORITY_PATTERNS)
 
 
-def section_map(sections: list[Section]) -> list[dict]:
-    return [s.to_dict() for s in sections]
+def section_map(sections: list[Section], offset: int = 0, limit: int = 100) -> list[dict]:
+    return [s.to_dict() for s in sections[offset:offset + min(limit, 100)]]
 
 
 def get_section(sections: list[Section], key: str) -> Optional[Section]:
@@ -226,6 +230,9 @@ def compact(
         "budget_scope": "content only; character-based estimate, not model tokens or JSON metadata",
         "budget_tokens": budget_tokens,
         "sections_included": [s.slug for s in included],
-        "sections_omitted": [s.slug for s in omitted],
+        "sections_omitted": [s.slug for s in omitted[:100]],
+        "sections_omitted_total": len(omitted),
         "section_map": section_map(sections),
+        "section_map_total": len(sections),
+        "section_map_truncated": len(sections) > 100,
     }

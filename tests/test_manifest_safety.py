@@ -52,7 +52,8 @@ def test_invalid_manifests_are_errors_not_empty_success(parser, text):
 
 
 @pytest.mark.asyncio
-async def test_manifest_failure_does_not_echo_private_path(tmp_path):
+async def test_manifest_failure_does_not_echo_private_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIVERSAL_DOCS_PROJECT_ROOT", str(tmp_path))
     path = tmp_path / 'SYNTHETIC_PRIVATE' / 'package.json'
     result = await server._handle_project_dependencies({'manifest_path': str(path)})
     payload = json.loads(result[0].text)

@@ -37,26 +37,11 @@ async def test_github_fallback_uses_requested_version(monkeypatch):
 async def test_registry_content_is_not_clipped_before_compaction(monkeypatch):
     long_text = "x" * 5000
 
-    class Response:
-        status_code = 200
+    import httpx
+    async def response(*args, **kwargs):
+        return httpx.Response(200, json={"info": {"description": long_text}})
 
-        def json(self):
-            return {"info": {"description": long_text}}
-
-    class Client:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def get(self, *args, **kwargs):
-            return Response()
-
-    monkeypatch.setattr(docs_fetcher.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(docs_fetcher, "get_response", response)
 
     result = await docs_fetcher.fetch_pypi_description("demo")
 
