@@ -1,0 +1,35 @@
+{
+  "id": "universal-docs-openclaw",
+  "name": "Universal Docs context hook",
+  "description": "Prepends a bounded current-docs packet before an OpenClaw model turn.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "executable": {
+        "type": "string",
+        "pattern": "^/",
+        "minLength": 1
+      },
+      "requestFile": {
+        "type": "string",
+        "pattern": "^/",
+        "minLength": 1
+      },
+      "cacheDir": {
+        "type": "string",
+        "pattern": "^/",
+        "minLength": 1
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 45000
+      }
+    },
+    "required": ["executable", "requestFile", "cacheDir"]
+  }
+}
