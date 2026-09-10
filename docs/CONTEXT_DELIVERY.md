@@ -37,6 +37,17 @@ No-match results are visible in raw preflight receipts and are not successful
 context delivery. Source/network failures remain unavailable rather than invented
 freshness. Stale fallback requires the explicit `allow_stale` policy.
 
+## Integrity and authority
+
+The producer hashes the exact selected UTF-8 context and binds its digest to the
+reported target and source metadata. Delivery recomputes this binding and the
+context byte count and rejects inconsistent envelopes or request-budget overruns.
+This detects corruption; it is **not publisher authentication**. The fixed
+retriever and local cache are trusted. The full-source digest is retriever-derived;
+the receiver recomputes the selected-context digest without pretending to hold or
+authenticate the whole upstream document. Coherent fabrication by a compromised
+trusted executable is outside this single-user contract.
+
 ## Harness seams
 
 - **Claude Code / Codex:** command hooks use the same request parser and receipt
