@@ -23,8 +23,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .cache import DocsCache
 from .docs_fetcher import FetchedDocument, fetch_docs_content_with_provenance
 from .network import network_lifespan
+from .official_preflight import (
+    OfficialDocument,
+    load_stale_official_document,
+    retrieve_official_document,
+)
+from .official_sources import fetch_official_source
 from .registries import PackageInfo, fetch_package
 from .retrieval import load_stale_record, retrieve_document
+from .source_catalog import source_for
+from .source_requests import OfficialPreflightRequest
 
 SCHEMA = "universal-docs.preflight/v1"
 MAX_INPUT_BYTES = 64 * 1024
@@ -95,6 +103,8 @@ class PreflightRequest(BaseModel):
 
 FetchPackage = Callable[..., Awaitable[PackageInfo | None]]
 FetchDocument = Callable[..., Awaitable[FetchedDocument | None]]
+FetchOfficial = Callable[..., Awaitable[FetchedDocument | None]]
+PreflightInput = PreflightRequest | OfficialPreflightRequest
 
 
 def _empty_receipt() -> dict[str, Any]:
@@ -245,6 +255,7 @@ def _select_context(
     query: str | None,
     requested_sections: list[str],
     budget_bytes: int,
+    target_label: str = "Package",
 ) -> tuple[str, dict[str, Any]]:
     # Imports stay local to keep the preflight's public surface wire-neutral.
     from .compaction import get_section, parse_sections, section_map
@@ -272,7 +283,7 @@ def _select_context(
     candidates.sort(key=lambda item: (-item[1], item[3]))
     prefix = (
         "UNTRUSTED DOCUMENTATION DATA\n"
-        f"Package: {package} v{version}\n"
+        f"{target_label}: {package} v{version}\n"
         f"Source: {source}\n"
         f"Source URL: {source_url}\n\n"
     )
@@ -353,6 +364,96 @@ def _freshness(
     }
 
 
+def _response_from_document(
+    request: PreflightInput,
+    *,
+    raw: str,
+    cached: bool,
+    provenance: dict[str, Any],
+    target: dict[str, Any],
+    display_name: str,
+    display_label: str,
+    version: str | None,
+    state: str,
+    stale: bool,
+    stale_reason: str | None,
+    retryable: bool,
+    latest_checked_at: float | None,
+    checked_at: float | None,
+) -> dict[str, Any]:
+    """Render package and official documents through one receipt boundary."""
+    if not raw or not version:
+        response = build_error_response(
+            "documentation_not_found" if raw == "" else "no_stable_release",
+            retryable=retryable,
+        )
+        response["found"] = False
+        response["receipt"]["target"].update(target)
+        if provenance:
+            response["receipt"]["source"].update(
+                {
+                    "kind": provenance.get("source"),
+                    "url": provenance.get("source_url"),
+                    "version_binding": provenance.get("version_binding"),
+                }
+            )
+        response["receipt"]["freshness"] = _freshness(
+            policy=request.freshness_mode,
+            state=state,
+            fetched_at=provenance.get("fetched_at"),
+            checked_at=checked_at,
+            latest_checked_at=latest_checked_at,
+            cached=cached or stale,
+            stale=stale,
+            stale_reason=stale_reason,
+            retryable=retryable,
+        )
+        return response
+
+    context, selection = _select_context(
+        raw,
+        package=display_name,
+        source=provenance.get("source") or "unknown",
+        source_url=provenance.get("source_url") or "",
+        version=version,
+        query=request.query,
+        requested_sections=request.section_ids,
+        budget_bytes=request.context_max_bytes,
+        target_label=display_label,
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    receipt = _empty_receipt()
+    receipt["target"].update(target)
+    receipt["source"].update(
+        {
+            "kind": provenance.get("source"),
+            "url": provenance.get("source_url"),
+            "version_binding": provenance.get("version_binding"),
+            "content_sha256": digest,
+            "content_bytes": len(raw.encode("utf-8")),
+        }
+    )
+    receipt["freshness"] = _freshness(
+        policy=request.freshness_mode,
+        state=state,
+        fetched_at=provenance.get("fetched_at"),
+        checked_at=checked_at,
+        latest_checked_at=latest_checked_at,
+        cached=cached or stale,
+        stale=stale,
+        stale_reason=stale_reason,
+        retryable=retryable,
+    )
+    receipt["selection"] = selection
+    return {
+        "schema": SCHEMA,
+        "found": True,
+        "context": context,
+        "receipt": receipt,
+        "retryable": retryable,
+    }
+
+
 def _response_from_loaded(
     request: PreflightRequest,
     loaded: tuple[PackageInfo, str, str, bool, dict[str, Any]],
@@ -373,85 +474,163 @@ def _response_from_loaded(
     latest_observed = (
         info.latest_stable if request.selection == "latest" and not stale else None
     )
-    if not raw or not version:
-        response = build_error_response(
-            "documentation_not_found" if raw == "" else "no_stable_release",
-            retryable=False,
-        )
-        response["found"] = False
-        response["receipt"]["target"].update(
-            {
-                "package": info.name,
-                "ecosystem": info.ecosystem,
-                "selection": request.selection,
-                "target_version": version,
-                "requested_version": request.exact_version,
-                "latest_observed": latest_observed,
-            }
-        )
-        return response
-
-    context, selection = _select_context(
-        raw,
-        package=info.name,
-        source=provenance.get("source") or "unknown",
-        source_url=provenance.get("source_url") or "",
-        version=version,
-        query=request.query,
-        requested_sections=request.section_ids,
-        budget_bytes=request.context_max_bytes,
-    )
-    fetched_at = provenance.get("fetched_at")
-    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    receipt = _empty_receipt()
-    receipt["target"].update(
-        {
+    return _response_from_document(
+        request,
+        raw=raw,
+        cached=cached,
+        provenance=provenance,
+        target={
             "package": info.name,
             "ecosystem": info.ecosystem,
             "selection": request.selection,
             "target_version": version,
             "requested_version": request.exact_version,
             "latest_observed": latest_observed,
-        }
-    )
-    receipt["source"].update(
-        {
-            "kind": provenance.get("source"),
-            "url": provenance.get("source_url"),
-            "version_binding": provenance.get("version_binding"),
-            "content_sha256": digest,
-            "content_bytes": len(raw.encode("utf-8")),
-        }
-    )
-    receipt["freshness"] = _freshness(
-        policy=request.freshness_mode,
+        },
+        display_name=info.name,
+        display_label="Package",
+        version=version,
         state=state,
-        fetched_at=fetched_at,
-        checked_at=checked_at,
-        latest_checked_at=latest_checked_at,
-        cached=cached or stale,
         stale=stale,
         stale_reason=stale_reason,
         retryable=retryable,
+        latest_checked_at=latest_checked_at,
+        checked_at=checked_at,
     )
-    receipt["selection"] = selection
+
+
+def _official_target(request: OfficialPreflightRequest) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
-        "found": True,
-        "context": context,
-        "receipt": receipt,
-        "retryable": retryable,
+        "package": None,
+        "ecosystem": None,
+        "source_id": request.source_id,
+        "selection": request.selection,
+        "target_version": request.exact_version,
+        "requested_version": request.exact_version,
+        "installed_version": None,
+        "installed_resolution": "not_applicable",
+        "latest_observed": None,
     }
 
 
+def _official_provenance(
+    document: OfficialDocument | None,
+    request: OfficialPreflightRequest,
+) -> dict[str, Any]:
+    if document is not None:
+        return {
+            "source": document.source,
+            "source_url": document.source_url,
+            "version_binding": document.version_binding,
+            "fetched_at": document.fetched_at,
+        }
+    source = source_for(request.source_id, request.exact_version)
+    return {
+        "source": "official_markdown",
+        "source_url": source.retrieval_url,
+        "version_binding": source.version_binding,
+        "fetched_at": None,
+    }
+
+
+async def _run_official_preflight(
+    request: OfficialPreflightRequest,
+    *,
+    cache: DocsCache,
+    fetch_official_fn: FetchOfficial,
+) -> dict[str, Any]:
+    fallback = (
+        load_stale_official_document(
+            cache,
+            request.source_id,
+            request.exact_version,
+        )
+        if request.freshness_mode == "allow_stale"
+        else None
+    )
+    try:
+        document = await retrieve_official_document(
+            request.source_id,
+            request.exact_version,
+            cache=cache,
+            fetch_fn=fetch_official_fn,
+            use_cache=request.freshness_mode == "allow_cache",
+        )
+        if document is None:
+            return _response_from_document(
+                request,
+                raw="",
+                cached=False,
+                provenance=_official_provenance(None, request),
+                target=_official_target(request),
+                display_name=request.source_id,
+                display_label="Source ID",
+                version=request.exact_version,
+                state="upstream_checked",
+                stale=False,
+                stale_reason=None,
+                retryable=False,
+                latest_checked_at=None,
+                checked_at=None,
+            )
+        checked_at = None if document.cached else time.time()
+        return _response_from_document(
+            request,
+            raw=document.content,
+            cached=document.cached,
+            provenance=_official_provenance(document, request),
+            target=_official_target(request),
+            display_name=request.source_id,
+            display_label="Source ID",
+            version=document.version,
+            state="cache_hit" if document.cached else "upstream_checked",
+            stale=False,
+            stale_reason=None,
+            retryable=False,
+            latest_checked_at=None,
+            checked_at=checked_at,
+        )
+    except Exception as exc:
+        error, retryable = _error_code(exc)
+        if fallback is not None:
+            return _response_from_document(
+                request,
+                raw=fallback.content,
+                cached=True,
+                provenance=_official_provenance(fallback, request),
+                target=_official_target(request),
+                display_name=request.source_id,
+                display_label="Source ID",
+                version=fallback.version,
+                state="stale_cache",
+                stale=True,
+                stale_reason=error,
+                retryable=True,
+                latest_checked_at=None,
+                checked_at=None,
+            )
+        response = build_error_response(error, retryable=retryable)
+        response["receipt"]["freshness"]["policy"] = request.freshness_mode
+        response["receipt"]["target"].update(_official_target(request))
+        return response
+
+
 async def run_preflight(
-    request: PreflightRequest,
+    request: PreflightInput,
     *,
     cache: DocsCache,
     fetch_package_fn: FetchPackage = fetch_package,
     fetch_document_fn: FetchDocument = fetch_docs_content_with_provenance,
+    fetch_official_fn: FetchOfficial = fetch_official_source,
 ) -> dict[str, Any]:
     """Run one bounded preflight with explicit cache/freshness semantics."""
+    if isinstance(request, OfficialPreflightRequest):
+        return await _run_official_preflight(
+            request,
+            cache=cache,
+            fetch_official_fn=fetch_official_fn,
+        )
+
     args = {
         "package": request.package,
         "ecosystem": request.ecosystem,
@@ -565,7 +744,7 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def parse_request(raw: bytes) -> PreflightRequest:
+def parse_request(raw: bytes) -> PreflightInput:
     if len(raw) > MAX_INPUT_BYTES:
         raise ValueError("input_too_large")
     value = json.loads(
@@ -575,6 +754,8 @@ def parse_request(raw: bytes) -> PreflightRequest:
     )
     if not isinstance(value, dict):
         raise ValueError("request_must_be_object")
+    if "source_id" in value:
+        return OfficialPreflightRequest.model_validate(value)
     return PreflightRequest.model_validate(value)
 
 
@@ -590,7 +771,7 @@ def _bounded_json_bytes(value: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-async def _run_cli(request: PreflightRequest, cache: DocsCache) -> dict[str, Any]:
+async def _run_cli(request: PreflightInput, cache: DocsCache) -> dict[str, Any]:
     async with network_lifespan():
         return await asyncio.wait_for(
             run_preflight(request, cache=cache), request.deadline_ms / 1000

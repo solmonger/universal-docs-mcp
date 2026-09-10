@@ -128,15 +128,34 @@ Package tools accept `ecosystem` aliases: Python (`python`, `pypi`, `pip`), Java
 
 ## Versioned official-source candidate
 
-The development library also has one fixed catalog entry: `mcp-tools` at
+The preflight CLI also accepts one fixed catalog entry: `mcp-tools` at
 `2026-07-28`, fetched as Markdown from the canonical MCP specification site.
-`fetch_official_source` accepts only a catalog ID and exact version—not a URL,
-`latest` alias, registry homepage, or arbitrary host. It reuses the bounded
-transport, caps the body at 1 MiB, rejects redirects/HTML/invalid UTF-8, and
-returns source text as data. A versioned URL is not proof the publisher can
-never change it; retain the acquisition time and content hash in receipts.
-This library path is live-fetch tested but **not yet connected to the MCP tools
-or a per-run hook**. The generic registry URL allowlist is unchanged.
+The official request is intentionally narrower than a package request:
+
+```json
+{
+  "source_id": "mcp-tools",
+  "selection": "requested",
+  "requested_version": "2026-07-28",
+  "query": "tools/list",
+  "context_max_bytes": 12000,
+  "freshness_mode": "require_check"
+}
+```
+
+`source_id` and the exact requested version are resolved through the immutable
+catalog; arbitrary URLs, `latest`, and package/ecosystem aliases are rejected.
+The request uses the shared selector and emits the same bounded JSON preflight
+shape. Its receipt keeps `package` and `ecosystem` null, records `source_id`,
+uses `installed_resolution: "not_applicable"`, and records the exact `.md` URL,
+`official_markdown` source, `versioned_url` binding, full-source SHA-256, and
+acquisition/freshness timestamps. `allow_cache` may reuse only the exact
+snapshot; `allow_stale` may return a bounded seven-day snapshot after an
+upstream failure, explicitly labeled stale. Missing or irrelevant source
+content returns empty context and a nonzero CLI status; no version is guessed.
+`fetch_official_source` remains a library-level catalog fetcher and never
+expands the generic registry URL allowlist.
+
 
 ## Guarantees and limits
 
