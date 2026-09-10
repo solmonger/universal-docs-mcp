@@ -7,7 +7,8 @@ package versions or turn raw preflight dictionaries into a success claim.
 
 ## Explicit configuration (not installed automatically)
 
-After review, copy this directory to the intended Hermes profile and configure:
+After review, copy this directory to the intended Hermes profile and merge the
+following settings. Add to the existing enabled list; do not replace other plugins:
 
 ```yaml
 plugins:
@@ -66,4 +67,5 @@ UNIVERSAL_DOCS_HERMES_NATIVE_TESTS=1 \
 
 The opt-in proof uses an isolated temporary Hermes home and a **fixture** context
 CLI through installed Hermes lifecycle/message assembly. It does not invoke a
-paid model or modify the active profile. A live-core integration proof is separate.
+paid model or modify the active profile. The separate live-core gate and its
+command are documented in [CONTEXT_DELIVERY.md](../../../docs/CONTEXT_DELIVERY.md).

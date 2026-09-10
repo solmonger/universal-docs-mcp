@@ -147,6 +147,27 @@ def _write_fixture_preflight(tmp_path: Path) -> tuple[Path, Path]:
     return executable, requests
 
 
+def native_plugin_config(
+    executable, request_file, *, timeout_ms=2000, callback_timeout=5
+):
+    """One fixture owner for the installed Hermes configuration schema."""
+    return {
+        "plugins": {
+            "enabled": ["universal-docs-preflight"],
+            "hook_callback_timeout": callback_timeout,
+            "entries": {
+                "universal-docs-preflight": {
+                    "settings": {
+                        "executable": str(executable),
+                        "request_file": str(request_file),
+                        "timeout_ms": timeout_ms,
+                    }
+                }
+            },
+        }
+    }
+
+
 def test_installed_hermes_lifecycle_injects_current_user_context_in_isolated_process(
     tmp_path,
 ):
@@ -175,21 +196,7 @@ def test_installed_hermes_lifecycle_injects_current_user_context_in_isolated_pro
     home = tmp_path / "hermes-home"
     plugin_dir = home / "plugins" / "universal-docs-preflight"
     shutil.copytree(CANDIDATE, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
-    config = {
-        "plugins": {
-            "enabled": ["universal-docs-preflight"],
-            "hook_callback_timeout": 5,
-            "entries": {
-                "universal-docs-preflight": {
-                    "settings": {
-                        "executable": str(executable),
-                        "request_file": str(request_file),
-                        "timeout_ms": 2000,
-                    }
-                }
-            },
-        }
-    }
+    config = native_plugin_config(executable, request_file)
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
     driver = tmp_path / "native_driver.py"

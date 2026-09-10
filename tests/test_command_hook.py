@@ -17,11 +17,11 @@ import pytest
 
 from universal_docs_mcp.command_hook import (
     HookConfig,
-    _build_packet,
     handle_event,
     load_config,
     load_request,
 )
+from universal_docs_mcp.context_delivery import build_context_packet
 from universal_docs_mcp.preflight import PreflightRequest
 
 SOURCE_HASH = "a" * 64
@@ -460,7 +460,7 @@ def test_latest_receipt_must_bind_selected_version_to_latest_observed(
 
 
 def test_clipping_notice_is_inside_packet_budget() -> None:
-    packet = _build_packet(
+    packet = build_context_packet(
         PreflightRequest.model_validate(request_data()),
         preflight_success(context="x" * 12_000),
     )
@@ -525,7 +525,7 @@ def test_pypi_identity_comparison_preserves_upstream_token() -> None:
     response = preflight_success()
     response["receipt"]["target"]["package"] = "Fixture_Docs"
 
-    packet = _build_packet(
+    packet = build_context_packet(
         PreflightRequest.model_validate(request_data()),
         response,
     )
@@ -539,7 +539,7 @@ def test_require_check_rejects_future_and_old_check_times() -> None:
         response["receipt"]["freshness"]["checked_at"] = checked_at
 
         with pytest.raises(ValueError, match="preflight_invalid_receipt"):
-            _build_packet(
+            build_context_packet(
                 PreflightRequest.model_validate(request_data()),
                 response,
             )
@@ -562,13 +562,13 @@ def test_valid_stale_receipt_is_prepared_stale() -> None:
     )
     response["retryable"] = True
 
-    packet = _build_packet(PreflightRequest.model_validate(request), response)
+    packet = build_context_packet(PreflightRequest.model_validate(request), response)
 
     assert "Status: prepared_stale" in packet
 
 
 def test_packet_escapes_document_delimiters() -> None:
-    packet = _build_packet(
+    packet = build_context_packet(
         PreflightRequest.model_validate(request_data()),
         preflight_success(
             context=(

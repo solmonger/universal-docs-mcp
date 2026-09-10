@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -16,11 +18,11 @@ from typing import Any
 import pytest
 
 REPO = Path(__file__).parents[1]
-ADAPTER = REPO / ".venv" / "bin" / "universal-docs-command-hook"
+ADAPTER = Path(sys.executable).parent / "universal-docs-command-hook"
 EVIDENCE_DIR = Path(
     os.environ.get(
         "UNIVERSAL_DOCS_HOST_EVIDENCE_DIR",
-        "/Users/operator/.hermes/workflows/universal-docs-hardening/cross-harness-design/command-hooks",
+        str(REPO / ".pytest_cache" / "host-evidence"),
     )
 )
 
@@ -33,14 +35,14 @@ def _request() -> dict[str, Any]:
         "requested_version": "1.2.3",
         "query": "timeouts retries",
         "section_ids": ["usage"],
-        "context_max_bytes": 2048,
+        "context_max_bytes": 12000,
         "freshness_mode": "require_check",
         "deadline_ms": 5000,
     }
 
 
 def _preflight_response() -> dict[str, Any]:
-    context = "Fixture docs: retries and timeouts are bounded."
+    context = "Fixture code literals for retries: a1,b2,c3,d4,e5,f6; " * 200
     now = time.time()
     return {
         "schema": "universal-docs.preflight/v1",
@@ -71,7 +73,7 @@ def _preflight_response() -> dict[str, Any]:
                 "fetched_at": now - 1.0,
                 "checked_at": now,
                 "latest_checked_at": None,
-                "age_seconds": 0.0,
+                "age_seconds": 1.0,
                 "cached": False,
                 "stale": False,
                 "unknown": False,
@@ -89,7 +91,7 @@ def _preflight_response() -> dict[str, Any]:
                 "section_map_total": 1,
                 "section_map_truncated": False,
                 "context_bytes": len(context.encode()),
-                "budget_bytes": 2048,
+                "budget_bytes": 12000,
                 "truncated": False,
             },
             "trust": {
@@ -105,11 +107,19 @@ def _preflight_response() -> dict[str, Any]:
 def _fixture_preflight(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     script = path / "fixture-preflight.py"
+    response = _preflight_response()
+    from universal_docs_mcp.context_delivery import build_context_packet
+    from universal_docs_mcp.preflight import PreflightRequest
+
+    expected = build_context_packet(
+        PreflightRequest.model_validate(_request()), response
+    )
+    (path / "expected-packet.txt").write_text(expected, encoding="utf-8")
     script.write_text(
         "#!/usr/bin/env python3\n"
         "import json, sys\n"
         "sys.stdin.buffer.read()\n"
-        f"sys.stdout.write({json.dumps(_preflight_response(), separators=(',', ':'))!r})\n",
+        f"sys.stdout.write({json.dumps(response, separators=(',', ':'))!r})\n",
         encoding="utf-8",
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
@@ -314,7 +324,12 @@ def _run_host(
     provider_url: str,
 ) -> tuple[subprocess.CompletedProcess[str] | None, dict[str, Any]]:
     if not ADAPTER.is_file() or ADAPTER.is_symlink():
-        pytest.fail("actual host receipt gate unverified: adapter entry point is unavailable")
+        pytest.fail(
+            "actual host receipt gate unverified: adapter entry point is unavailable"
+        )
+    host_executable = shutil.which(harness)
+    if not host_executable:
+        pytest.fail(f"explicit native gate prerequisite unavailable: {harness}")
     fixture = tmp_path / "workspace"
     fixture.mkdir()
     preflight = _fixture_preflight(tmp_path / "preflight")
@@ -365,7 +380,7 @@ def _run_host(
             encoding="utf-8",
         )
         command_line = [
-            "/Users/operator/.local/bin/claude",
+            host_executable,
             "--no-session-persistence",
             "-p",
             "Reply with the fixture marker only.",
@@ -380,27 +395,11 @@ def _run_host(
         codex_home = tmp_path / "codex-home"
         codex_home.mkdir()
         env["CODEX_HOME"] = str(codex_home)
-        (codex_home / "hooks.json").write_text(
-            json.dumps(
-                {
-                    "hooks": {
-                        "UserPromptSubmit": [
-                            {
-                                "hooks": [
-                                    {
-                                        "type": "command",
-                                        "command": command,
-                                        "timeout": 25,
-                                        "additionalContextLimit": 2000,
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                }
-            ),
-            encoding="utf-8",
+        hooks = json.loads(
+            (REPO / "examples/command-hooks/codex/hooks.json").read_text()
         )
+        hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] = command
+        (codex_home / "hooks.json").write_text(json.dumps(hooks), encoding="utf-8")
         (codex_home / "config.toml").write_text(
             "model = 'fixture-model'\n"
             "model_provider = 'fixture'\n"
@@ -415,7 +414,7 @@ def _run_host(
             encoding="utf-8",
         )
         command_line = [
-            "/Users/operator/.local/bin/codex",
+            host_executable,
             "--dangerously-bypass-hook-trust",
             "exec",
             "--ephemeral",
@@ -440,6 +439,21 @@ def _run_host(
     with _FixtureHandler.lock:
         requests = list(_FixtureHandler.requests)
     request_text = json.dumps(requests, ensure_ascii=False)
+    expected_packet = preflight.with_name("expected-packet.txt").read_text(
+        encoding="utf-8"
+    )
+
+    def text_values(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for nested in value.values():
+                yield from text_values(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from text_values(nested)
+
+    full_packet_present = any(expected_packet in text for text in text_values(requests))
     request_body = requests[0]["body"] if requests else {}
     evidence = {
         "harness": harness,
@@ -456,6 +470,8 @@ def _run_host(
         "model_request_received": bool(requests),
         "hook_context_marker_present": "UDCTX:aaaaaaaaaaaaaaaa" in request_text,
         "prepared_receipt_present": "model consumption is not asserted" in request_text,
+        "full_packet_present": full_packet_present,
+        "expected_packet_bytes": len(expected_packet.encode("utf-8")),
         "provider_request_paths": [item["path"] for item in requests],
         "provider_request_body_keys": sorted(request_body)
         if isinstance(request_body, dict)
@@ -487,14 +503,17 @@ def _assert_or_record(
         if completed is not None and completed.returncode != 0:
             detail += f" (returncode={completed.returncode})"
         pytest.fail(f"actual {harness} receipt gate unverified: {detail}")
-    if not evidence["host_process_completed"] or not evidence[
-        "host_stdout_contains_fixture_label"
-    ]:
+    if (
+        not evidence["host_process_completed"]
+        or not evidence["host_stdout_contains_fixture_label"]
+    ):
         pytest.fail(
             f"actual {harness} receipt gate unverified: fixture response was absent"
         )
     assert evidence["hook_context_marker_present"] is True
     assert evidence["prepared_receipt_present"] is True
+    assert evidence["full_packet_present"] is True
+    assert evidence["host_returncode"] == 0
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex"])

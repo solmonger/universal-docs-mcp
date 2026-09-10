@@ -23,7 +23,7 @@ from typing import Any, BinaryIO, Literal, TextIO
 
 from .context_delivery import MAX_PACKET_BYTES as MAX_CONTEXT_PACKET_BYTES
 from .context_delivery import build_context_packet
-from .preflight import PreflightRequest
+from .preflight import PreflightInput, parse_request
 
 SCHEMA = "universal-docs.preflight/v1"
 HARNESS_EVENT = "UserPromptSubmit"
@@ -49,7 +49,7 @@ class HookConfig:
     """Fixed command and preflight request selected outside the hook event."""
 
     command: tuple[str, ...]
-    request: PreflightRequest
+    request: PreflightInput
     timeout_ms: int = 30_000
 
     def __post_init__(self) -> None:
@@ -157,9 +157,11 @@ def _read_regular(path: Path, *, too_large: str, not_regular: str) -> bytes:
     raise AssertionError("unreachable")
 
 
-def _validated_request(value: Any) -> PreflightRequest:
+def _validated_request(value: Any) -> PreflightInput:
     try:
-        return PreflightRequest.model_validate(value)
+        return parse_request(
+            json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        )
     except (TypeError, ValueError) as exc:
         raise AdapterConfigError("request_invalid") from exc
 
@@ -181,7 +183,7 @@ def _command(value: Any) -> tuple[str, ...]:
     return command
 
 
-def load_request(path: Path) -> PreflightRequest:
+def load_request(path: Path) -> PreflightInput:
     """Read one fixed request file, rejecting links and special files."""
 
     raw = _read_regular(
@@ -439,12 +441,6 @@ def _parse_preflight_output(raw: bytes) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _build_packet(request: PreflightRequest, result: dict[str, Any]) -> str:
-    """Compatibility wrapper around the shared delivery validator/formatter."""
-
-    return build_context_packet(request, result)
-
-
 def _block(code: str) -> dict[str, str]:
     return {
         "decision": "block",
@@ -513,7 +509,7 @@ def handle_event(
     if result is None:
         return _block("preflight_malformed"), 0
     try:
-        packet = _build_packet(config.request, result)
+        packet = build_context_packet(config.request, result)
         payload = (
             format_claude_output(packet)
             if harness == "claude"

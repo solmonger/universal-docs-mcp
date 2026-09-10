@@ -92,7 +92,9 @@ def successful_result(context: str = "Fixture documentation.") -> dict:
     }
 
 
-def test_context_cli_uses_parse_and_run_cli_in_process(tmp_path: Path, monkeypatch) -> None:
+def test_context_cli_uses_parse_and_run_cli_in_process(
+    tmp_path: Path, monkeypatch
+) -> None:
     request_path = tmp_path / "request.json"
     raw_request = b'{"request":"passed untouched to preflight"}'
     request_path.write_bytes(raw_request)
@@ -128,7 +130,9 @@ def test_context_cli_uses_parse_and_run_cli_in_process(tmp_path: Path, monkeypat
     assert len(lines[0]) <= 16 * 1024
 
 
-def test_context_cli_reports_unavailable_without_context(tmp_path: Path, monkeypatch) -> None:
+def test_context_cli_reports_unavailable_without_context(
+    tmp_path: Path, monkeypatch
+) -> None:
     request_path = tmp_path / "request.json"
     request_path.write_bytes(b"ignored by patched parser")
 
@@ -200,6 +204,28 @@ def test_official_receipt_does_not_invent_package_identity() -> None:
 
     assert 'Target source ID: "mcp-tools"' in packet
     assert 'Target package: "mcp-tools"' not in packet
-    assert 'Target package: null' in packet
-    assert 'Ecosystem: null' in packet
+    assert "Target package: null" in packet
+    assert "Ecosystem: null" in packet
     assert "not applicable; this is not a package" in packet
+
+
+def test_cli_exit_agrees_with_serialized_unavailable_frame(tmp_path, monkeypatch):
+    request_path = tmp_path / "request.json"
+    request_path.write_text("{}")
+    selected = request().model_copy(update={"context_max_bytes": 8000})
+    monkeypatch.setattr(context_cli, "parse_request", lambda raw: selected)
+
+    async def run(parsed, cache):
+        # Valid UTF-8 source controls expand during JSON serialization.
+        result = successful_result("\x01" * 6000)
+        result["receipt"]["selection"]["budget_bytes"] = 8000
+        return result
+
+    monkeypatch.setattr(context_cli, "_run_cli", run)
+    output = io.BytesIO()
+    code = context_cli.main(["--request-file", str(request_path)], stdout=output)
+    frame = json.loads(output.getvalue())
+    assert frame["status"] == "unavailable"
+    assert frame["error"] == "response_too_large"
+    assert len(output.getvalue()) <= context_cli.MAX_OUTPUT_BYTES
+    assert code == 1

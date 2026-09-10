@@ -7,7 +7,7 @@
             "type": "command",
             "command": "/absolute/path/to/.venv/bin/universal-docs-command-hook --harness codex --config /absolute/path/to/adapter.json",
             "timeout": 25,
-            "additionalContextLimit": 2000
+            "additionalContextLimit": 8192
           }
         ]
       }

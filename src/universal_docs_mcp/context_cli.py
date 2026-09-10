@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import BinaryIO, NoReturn
 
 from .command_hook import AdapterConfigError, _read_regular
-from .context_delivery import CONTEXT_SCHEMA, ContextDelivery, deliver_result
+from .context_delivery import ContextDelivery, deliver_result
 from .preflight import MAX_INPUT_BYTES, DocsCache, _run_cli, parse_request
 
 MAX_OUTPUT_BYTES = 16 * 1024
@@ -39,38 +39,23 @@ def _request_file(path: Path) -> bytes:
     )
 
 
-def _write_delivery(delivery: ContextDelivery, stdout: BinaryIO) -> None:
-    payload = delivery.as_dict()
+def _write_delivery(delivery: ContextDelivery, stdout: BinaryIO) -> int:
+    def encode(value: ContextDelivery) -> bytes:
+        return json.dumps(
+            value.as_dict(), ensure_ascii=False, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+
     try:
-        encoded = json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
+        encoded = encode(delivery)
     except (TypeError, ValueError, RecursionError, OverflowError):
-        encoded = json.dumps(
-            {
-                "schema": CONTEXT_SCHEMA,
-                "status": "unavailable",
-                "context": "",
-                "error": "internal_error",
-            },
-            separators=(",", ":"),
-        ).encode("utf-8")
-    if len(encoded) > MAX_OUTPUT_BYTES:
-        encoded = json.dumps(
-            {
-                "schema": CONTEXT_SCHEMA,
-                "status": "unavailable",
-                "context": "",
-                "error": "response_too_large",
-            },
-            separators=(",", ":"),
-        ).encode("utf-8")
+        delivery = _unavailable("internal_error")
+        encoded = encode(delivery)
+    if len(encoded) + 1 > MAX_OUTPUT_BYTES:
         delivery = _unavailable("response_too_large")
+        encoded = encode(delivery)
     stdout.write(encoded + b"\n")
     stdout.flush()
+    return 0 if delivery.status in {"prepared", "prepared_stale"} else 1
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -114,7 +99,13 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
         return 1
     try:
         request = parse_request(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ):
         _write_delivery(_unavailable("invalid_request"), output)
         return 1
 
@@ -129,8 +120,7 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
             _write_delivery(_unavailable("preflight_unavailable"), output)
             return 1
         delivery = deliver_result(request, result)
-        _write_delivery(delivery, output)
-        return 0 if delivery.status in {"prepared", "prepared_stale"} else 1
+        return _write_delivery(delivery, output)
     finally:
         cache.close()
 
