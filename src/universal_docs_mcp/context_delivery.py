@@ -8,12 +8,13 @@ documents or resolves a project manifest.
 from __future__ import annotations
 
 import math
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, cast
 
 from .context_integrity import context_integrity
+from .source_catalog import source_for
+from .source_identity import package_names_match, package_source_matches
 
 PREFLIGHT_SCHEMA = "universal-docs.preflight/v1"
 CONTEXT_SCHEMA = "universal-docs.context/v1"
@@ -196,20 +197,6 @@ def _check_timestamp(
     return timestamp
 
 
-def _pypi_name(value: str) -> str:
-    # PEP 503 canonicalization is only for identity checks.  The original
-    # token remains in the receipt and packet exactly as supplied upstream.
-    return re.sub(r"[-_.]+", "-", value).lower()
-
-
-def _same_package(expected: str, actual: Any, ecosystem: str) -> bool:
-    if not isinstance(actual, str) or not actual:
-        return False
-    if ecosystem == "python":
-        return _pypi_name(expected) == _pypi_name(actual)
-    return expected == actual
-
-
 def _validate_result(request: Any, result: Any) -> _ValidatedResult:
     identity = _request_identity(request)
     if not isinstance(result, dict):
@@ -247,7 +234,7 @@ def _validate_result(request: Any, result: Any) -> _ValidatedResult:
             raise _invalid()
     else:
         if (
-            not _same_package(
+            not package_names_match(
                 identity.package or "", target.get("package"), identity.ecosystem or ""
             )
             or target.get("ecosystem") != identity.ecosystem
@@ -276,8 +263,28 @@ def _validate_result(request: Any, result: Any) -> _ValidatedResult:
     elif target_requested is not None:
         raise _invalid()
 
-    _string(source.get("kind"), max_bytes=256)
-    _string(source.get("url"), max_bytes=4096)
+    source_kind = _string(source.get("kind"), max_bytes=256)
+    source_url = _string(source.get("url"), max_bytes=4096)
+    if identity.official:
+        catalog = source_for(_string(identity.source_id, max_bytes=128), target_version)
+        if (
+            source_kind != "official_markdown"
+            or source_url != catalog.retrieval_url
+            or source.get("version_binding") != catalog.version_binding
+        ):
+            raise _invalid()
+    elif not package_source_matches(
+        package=target["package"],
+        ecosystem=target["ecosystem"],
+        version=target_version,
+        source=source_kind,
+        source_url=source_url,
+    ):
+        raise _invalid()
+    elif source.get("version_binding") != (
+        "unverified_git_ref" if source_kind == "github_readme" else "registry_version"
+    ):
+        raise _invalid()
     content_sha = source.get("content_sha256")
     if (
         not isinstance(content_sha, str)

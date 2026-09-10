@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0rc2 — local review repair
+
+- Bind all cache aliases and stale fallback records to exact package, ecosystem, version and supported source URL; preserve valid PyPI spelling aliases without relabeling documents.
+- Recompute selected-context integrity at delivery and reject source URL/identity mismatches even when a supplied envelope is internally consistent. Full-source hashes remain trusted-retriever claims, not independent publisher authentication.
+- Enforce the request’s UTF-8 context budget and declared byte count separately from packet/JSON caps.
+
+
 ## 0.4.0rc1 — cross-harness local release candidate
 
 - Advertise strict per-tool output schemas covering real success and error shapes.

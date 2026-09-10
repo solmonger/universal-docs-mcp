@@ -50,8 +50,8 @@ def successful_result(context: str = "Fixture documentation.") -> dict:
                 "latest_observed": None,
             },
             "source": {
-                "kind": "fixture_source",
-                "url": "https://docs.example.test/fixture-docs/1.2.3",
+                "kind": "pypi_description",
+                "url": "https://pypi.org/pypi/fixture-docs/1.2.3/json",
                 "version_binding": "registry_version",
                 "content_sha256": SOURCE_HASH,
                 "content_bytes": len(context.encode()),
@@ -189,6 +189,13 @@ def test_official_receipt_does_not_invent_package_identity() -> None:
     )
     now = time.time()
     result = successful_result("Tools specification data.")
+    result["receipt"]["source"].update(
+        {
+            "kind": "official_markdown",
+            "version_binding": "versioned_url",
+            "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/tools.md",
+        }
+    )
     result["receipt"]["target"] = {
         "package": None,
         "ecosystem": None,

@@ -8,7 +8,13 @@ from universal_docs_mcp.context_integrity import context_integrity
 def test_packet_retains_unverified_binding_and_fetch_provenance():
     result = successful_result()
     receipt = result["receipt"]
-    receipt["source"]["version_binding"] = "unverified_git_ref"
+    receipt["source"].update(
+        {
+            "kind": "github_readme",
+            "version_binding": "unverified_git_ref",
+            "url": "https://api.github.com/repos/fixture/fixture-docs/readme?ref=1.2.3",
+        }
+    )
     receipt["integrity"] = context_integrity(result["context"], receipt)
     packet = build_context_packet(request(), result)
     assert 'Source version binding: "unverified_git_ref"' in packet

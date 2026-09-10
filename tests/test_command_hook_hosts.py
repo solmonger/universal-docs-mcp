@@ -63,8 +63,8 @@ def _preflight_response() -> dict[str, Any]:
                 "latest_observed": None,
             },
             "source": {
-                "kind": "fixture_source",
-                "url": "https://docs.example.test/fixture-docs/1.2.3",
+                "kind": "pypi_description",
+                "url": "https://pypi.org/pypi/fixture-docs/1.2.3/json",
                 "version_binding": "registry_version",
                 "content_sha256": "a" * 64,
                 "content_bytes": len(context.encode()),

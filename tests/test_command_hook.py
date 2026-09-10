@@ -63,8 +63,8 @@ def preflight_success(
                 "latest_observed": None,
             },
             "source": {
-                "kind": "fixture_source",
-                "url": "https://docs.example.test/fixture-docs/1.2.3",
+                "kind": "pypi_description",
+                "url": "https://pypi.org/pypi/fixture-docs/1.2.3/json",
                 "version_binding": "registry_version",
                 "content_sha256": SOURCE_HASH,
                 "content_bytes": len(context.encode()),
@@ -531,6 +531,9 @@ def test_bounded_regular_file_open_is_nonblocking_against_fifo_race(
 def test_pypi_identity_comparison_preserves_upstream_token() -> None:
     response = preflight_success()
     response["receipt"]["target"]["package"] = "Fixture_Docs"
+    response["receipt"]["source"]["url"] = (
+        "https://pypi.org/pypi/Fixture_Docs/1.2.3/json"
+    )
     response["receipt"]["integrity"] = context_integrity(
         response["context"], response["receipt"]
     )

@@ -1,6 +1,6 @@
 {
   "name": "universal-docs-harness-hooks",
-  "version": "0.4.0-rc.1",
+  "version": "0.4.0-rc.2",
   "private": true,
   "type": "module",
   "scripts": {"test": "node --test tests/*.test.mjs"},

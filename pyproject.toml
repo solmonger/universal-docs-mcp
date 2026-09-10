@@ -1,6 +1,6 @@
 [project]
 name = "universal-docs-mcp"
-version = "0.4.0rc1"
+version = "0.4.0rc2"
 description = "Local MCP server for version-aware PyPI, npm and crates.io README retrieval"
 readme = "README.md"
 license = {text = "MIT"}

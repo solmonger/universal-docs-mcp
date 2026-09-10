@@ -15,6 +15,7 @@ from .cache import DEFAULT_TTL, DocsCache
 from .docs_fetcher import FetchedDocument, fetch_docs_content_with_provenance
 from .registries import PackageInfo, fetch_package
 from .source_identity import (
+    package_names_match,
     package_source_matches,
     registry_version_for_source_url,
 )
@@ -104,7 +105,7 @@ def _package_info_matches_request(
     info: PackageInfo, *, package: str, ecosystem: str | None
 ) -> bool:
     name = getattr(info, "name", None)
-    if not isinstance(name, str) or name != package:
+    if not package_names_match(package, name, getattr(info, "ecosystem", "")):
         return False
     resolved = _canonical_ecosystem(getattr(info, "ecosystem", None))
     expected = _canonical_ecosystem(ecosystem)
@@ -125,7 +126,7 @@ def _validated_record(
 ) -> tuple[PackageInfo, str] | None:
     """Return parsed metadata and bound version, or reject the row."""
     info = _record_info(record)
-    if info is None or info.name != package:
+    if info is None or not package_names_match(package, info.name, info.ecosystem):
         return None
     record_ecosystem = _canonical_ecosystem(info.ecosystem)
     expected_ecosystem = _canonical_ecosystem(ecosystem)
@@ -418,15 +419,10 @@ async def retrieve_document(
     # Keep exact aliases and a latest fallback alias in the shared cache.  The
     # latest alias is only a stale fallback candidate; it is never a fresh hit.
     for write_namespace in _write_namespaces(ecosystem, info.ecosystem):
-        cache.set(
-            f"docrequest-v4:{write_namespace}:{info.name}:{version}",
-            record,
-        )
-        if requested is None or version == info.latest_stable:
-            cache.set(
-                f"docrequest-v4:{write_namespace}:{info.name}:latest",
-                record,
-            )
+        for spelling in dict.fromkeys((info.name, package)):
+            cache.set(f"docrequest-v4:{write_namespace}:{spelling}:{version}", record)
+            if requested is None or version == info.latest_stable:
+                cache.set(f"docrequest-v4:{write_namespace}:{spelling}:latest", record)
     return _loaded_from_record(
         record,
         info,

@@ -2,9 +2,9 @@
 
 A local, read-only MCP server for **version-aware package READMEs and registry descriptions** from PyPI, npm, and crates.io/GitHub. It helps coding agents use project-relevant documentation rather than assume their training data matches an installed dependency.
 
-This source tree is **0.4.0rc1**, a local release candidate. Acceptance is recorded against the exact commit and artifact, not inferred from this version label. The previously reviewed/deployed build remains **0.3.0rc2**. Do not assume the public repository or PyPI contains this revision. It is not a full API-documentation crawler or symbol-search service.
+This source tree is **0.4.0rc2**, a local release candidate. Acceptance is recorded against the exact commit and artifact, not inferred from this version label. The previously reviewed/deployed build remains **0.3.0rc2**. Do not assume the public repository or PyPI contains this revision. It is not a full API-documentation crawler or symbol-search service.
 
-Cross-harness work is tracked in [the implementation spec](specs/cross-harness-fresh-docs/README.md). The freshness-aware `universal-docs-preflight` CLI is implemented as a source candidate; automatic per-harness context injection and July-2026 protocol compatibility are not yet claimed.
+Cross-harness work is tracked in [the implementation spec](specs/cross-harness-fresh-docs/README.md). The freshness-aware `universal-docs-preflight` CLI is implemented as a source candidate; opt-in per-harness context adapters are implemented. Exact-object delivery evidence is separate from activation into user profiles. July-2026 server conformance is not claimed.
 
 ## What it does
 

@@ -28,6 +28,23 @@ def _canonical_ecosystem(ecosystem: object) -> str:
     return ALIASES.get(ecosystem, ecosystem)
 
 
+def package_names_match(expected: object, actual: object, ecosystem: str) -> bool:
+    """Compare valid registry spellings without changing either source token."""
+    if (
+        not isinstance(expected, str)
+        or not isinstance(actual, str)
+        or not expected
+        or not actual
+    ):
+        return False
+    if _canonical_ecosystem(ecosystem) == "python":
+        return (
+            re.sub(r"[-_.]+", "-", expected).lower()
+            == re.sub(r"[-_.]+", "-", actual).lower()
+        )
+    return expected == actual
+
+
 def _github_repository_parts(repository: object) -> tuple[str, str] | None:
     if not isinstance(repository, str):
         return None

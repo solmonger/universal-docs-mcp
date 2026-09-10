@@ -2,6 +2,8 @@
 
 import hashlib
 
+import pytest
+
 from universal_docs_mcp.cache import DocsCache
 from universal_docs_mcp.docs_fetcher import FetchedDocument
 from universal_docs_mcp.preflight import PreflightRequest, run_preflight
@@ -74,3 +76,26 @@ async def test_delivery_rejects_changed_source_digest(tmp_path):
     req, result = await produced_result(tmp_path)
     result["receipt"]["source"]["content_sha256"] = "0" * 64
     assert deliver_result(req, result).status == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///private/secret/source.md",
+        "https://user:secret@pypi.org/pypi/demo/1.2.3/json",
+        "https://other.invalid/pypi/demo/1.2.3/json",
+        "https://pypi.org/pypi/demo/9.9.9/json",
+    ],
+)
+async def test_consistently_bound_but_wrong_source_url_is_not_delivered(tmp_path, url):
+    from universal_docs_mcp.context_delivery import deliver_result
+    from universal_docs_mcp.context_integrity import context_integrity
+
+    req, result = await produced_result(tmp_path)
+    result["receipt"]["source"]["url"] = url
+    result["receipt"]["integrity"] = context_integrity(
+        result["context"], result["receipt"]
+    )
+    outcome = deliver_result(req, result)
+    assert outcome.status == "unavailable"
+    assert outcome.context == ""
