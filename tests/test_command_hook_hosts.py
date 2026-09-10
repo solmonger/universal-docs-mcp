@@ -8,6 +8,7 @@ import shlex
 import stat
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ def _request() -> dict[str, Any]:
 
 def _preflight_response() -> dict[str, Any]:
     context = "Fixture docs: retries and timeouts are bounded."
+    now = time.time()
     return {
         "schema": "universal-docs.preflight/v1",
         "found": True,
@@ -66,8 +68,8 @@ def _preflight_response() -> dict[str, Any]:
             "freshness": {
                 "policy": "require_check",
                 "state": "upstream_checked",
-                "fetched_at": 100.0,
-                "checked_at": 101.0,
+                "fetched_at": now - 1.0,
+                "checked_at": now,
                 "latest_checked_at": None,
                 "age_seconds": 0.0,
                 "cached": False,
@@ -312,7 +314,7 @@ def _run_host(
     provider_url: str,
 ) -> tuple[subprocess.CompletedProcess[str] | None, dict[str, Any]]:
     if not ADAPTER.is_file() or ADAPTER.is_symlink():
-        pytest.skip("editable adapter entry point is not installed in this worktree")
+        pytest.fail("actual host receipt gate unverified: adapter entry point is unavailable")
     fixture = tmp_path / "workspace"
     fixture.mkdir()
     preflight = _fixture_preflight(tmp_path / "preflight")
@@ -443,6 +445,11 @@ def _run_host(
         "harness": harness,
         "installed_host": command_line[0],
         "adapter_command": command,
+        "trust_mode": (
+            "dangerously-bypass-hook-trust (isolated fixture only)"
+            if harness == "codex"
+            else "host-default"
+        ),
         "provider": "loopback fixture; synthetic token; no live model",
         "host_process_completed": completed is not None,
         "host_returncode": completed.returncode if completed else None,
@@ -479,7 +486,13 @@ def _assert_or_record(
         detail = "host did not produce a loopback provider request"
         if completed is not None and completed.returncode != 0:
             detail += f" (returncode={completed.returncode})"
-        pytest.skip(f"actual {harness} receipt gate unverified: {detail}")
+        pytest.fail(f"actual {harness} receipt gate unverified: {detail}")
+    if not evidence["host_process_completed"] or not evidence[
+        "host_stdout_contains_fixture_label"
+    ]:
+        pytest.fail(
+            f"actual {harness} receipt gate unverified: fixture response was absent"
+        )
     assert evidence["hook_context_marker_present"] is True
     assert evidence["prepared_receipt_present"] is True
 

@@ -58,6 +58,31 @@ For explicit argv targets, use `--package`, `--ecosystem`, `--selection`,
 `--context-max-bytes`, `--freshness-mode`, and `--deadline-ms` alongside
 `--preflight-executable`.
 
+## Neutral context boundary
+
+Adapters that have their own lifecycle seam can invoke the same boundary
+without nesting a command hook or spawning another preflight process:
+
+```sh
+.venv/bin/universal-docs-context \
+  --request-file /absolute/trusted/request.json
+```
+
+The request file is one bounded absolute regular file. The CLI does not read
+stdin, prompts, manifests, project configuration, or model settings. It calls
+`preflight.parse_request` and the async `_run_cli` in-process, then applies the
+same receipt validator and packet formatter used by the Claude/Codex adapter.
+It emits exactly one compact JSON line:
+
+```json
+{"schema":"universal-docs.context/v1","status":"prepared","context":"...","error":null}
+```
+
+`context` is capped at 8 KiB and the complete line at 16 KiB. `prepared` and
+`prepared_stale` exit 0; `unavailable` has an empty context, an enumerated
+error, and exits 1. This boundary only delivers documentation data; it never
+makes model calls or claims that a model consumed the packet.
+
 ## Host configuration
 
 Claude Code project settings:
@@ -135,6 +160,11 @@ secrets, and proxy variables are not passed to preflight. The event's supplied
 command, `cwd`, and transcript path are never executed or opened. Queries stay
 inside the local preflight request and are not sent by this adapter to a
 separate service.
+
+The isolated Codex consumer fixture uses
+`--dangerously-bypass-hook-trust` only because that fixture deliberately tests
+a vetted temporary hook configuration. Its evidence records that trust mode.
+Do not use that bypass for production or for hooks that have not been reviewed.
 
 ## Verification
 

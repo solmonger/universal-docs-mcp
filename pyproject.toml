@@ -31,6 +31,7 @@ dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff==0.16.6", "build>=1,<2"
 universal-docs-mcp = "universal_docs_mcp.server:main"
 universal-docs-preflight = "universal_docs_mcp.preflight:main"
 universal-docs-command-hook = "universal_docs_mcp.command_hook:main"
+universal-docs-context = "universal_docs_mcp.context_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
