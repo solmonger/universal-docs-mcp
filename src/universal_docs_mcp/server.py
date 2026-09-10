@@ -390,7 +390,7 @@ async def _handle_project_dependencies(args: dict) -> list[types.TextContent]:
         return [types.TextContent(type="text", text=json.dumps({
             "found": False,
             "error": "manifest_error",
-            "message": str(exc),
+            "message": "Manifest could not be read or parsed; check format, path and permissions.",
         }, indent=2))]
     return [types.TextContent(type="text", text=json.dumps({
         "found": True,
