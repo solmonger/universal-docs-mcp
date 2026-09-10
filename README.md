@@ -94,14 +94,17 @@ request shape is:
 Use `selection: "latest"` without a version, and choose one explicit
 `freshness_mode`: `require_check` bypasses document cache, `allow_cache` may
 reuse a valid exact document (but latest still checks registry metadata), and
-`allow_stale` may return a bounded expired exact record only after an upstream
-failure. A response's `receipt` keeps `target_version`, `requested_version`,
+`allow_stale` may return a retained exact record after an upstream check
+fails, explicitly labeled stale even when its cache TTL has not elapsed. Fallback
+is bounded to seven days of source age; quotas/pruning mean retention is not
+guaranteed. A response's `receipt` keeps `target_version`, `requested_version`,
 `installed_version: null`/`installed_resolution: "unknown"`, and
 `latest_observed` separate. It also reports `fetched_at`, successful
 `checked_at`/`latest_checked_at`, cache/stale/unknown state, age, SHA-256,
 source URL, and version binding. `context` is query/section-selected,
 UTF-8-byte bounded, and labeled untrusted; `selection.no_match` is explicit
-instead of silently dumping the document. Exit status is 0 for usable context,
+instead of silently dumping the document. Missing meaningful query/sections
+returns an outline and no context. Exit status is 0 for usable context,
 1 for a retrieval miss/unavailable response, and 2 for invalid input.
 
 Package tools accept `ecosystem` aliases: Python (`python`, `pypi`, `pip`), JavaScript/TypeScript (`javascript`, `typescript`, `npm`, `js`, `ts`), Rust (`rust`, `cargo`, `crate`). Omit it to try applicable registries in that order; specify it when a package name exists in multiple ecosystems.

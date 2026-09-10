@@ -181,7 +181,37 @@ def _error_code(exc: BaseException) -> tuple[str, bool]:
 def _terms(query: str | None) -> list[str]:
     if not query:
         return []
-    return re.findall(r"[a-z0-9][a-z0-9_-]{1,63}", query.lower())[:32]
+    stopwords = {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "of",
+        "to",
+        "in",
+        "is",
+        "are",
+        "for",
+        "with",
+        "how",
+        "on",
+        "at",
+        "from",
+        "use",
+        "using",
+        "docs",
+        "documentation",
+        "about",
+        "please",
+    }
+    return list(
+        dict.fromkeys(
+            term
+            for term in re.findall(r"[a-z0-9][a-z0-9_-]{1,63}", query.lower())
+            if term not in stopwords
+        )
+    )[:32]
 
 
 def _score_section(section: Any, terms: list[str]) -> tuple[int, str]:
@@ -238,13 +268,6 @@ def _select_context(
                 item = (section, score, reason, position)
                 by_identity[section.slug] = item
                 candidates.append(item)
-    elif not requested_sections:
-        # Without intent, provide only a small deterministic opening slice; a
-        # caller wanting more must ask for a section or a query.
-        for position, section in enumerate(sections[:8]):
-            item = (section, 1, "default bounded opening", position)
-            by_identity[section.slug] = item
-            candidates.append(item)
 
     candidates.sort(key=lambda item: (-item[1], item[3]))
     prefix = (
@@ -342,7 +365,11 @@ def _response_from_loaded(
     checked_at: float | None,
 ) -> dict[str, Any]:
     info, _header, raw, cached, provenance = loaded
-    version = request.exact_version or info.latest_stable
+    version = (
+        request.exact_version
+        or provenance.get("document_version")
+        or info.latest_stable
+    )
     latest_observed = (
         info.latest_stable if request.selection == "latest" and not stale else None
     )
@@ -432,6 +459,18 @@ async def run_preflight(
         # require_check means both metadata and exact content bypass cache.
         "force_refresh": request.freshness_mode == "require_check",
     }
+    # Snapshot before another request's cache write can prune expired rows.
+    fallback = (
+        load_stale_record(
+            cache,
+            request.package,
+            request.ecosystem,
+            request.exact_version,
+            max_age=MAX_STALE_AGE_SECONDS,
+        )
+        if request.freshness_mode == "allow_stale"
+        else None
+    )
     latest_checked_at: float | None = None
     checked_at: float | None = None
     try:
@@ -474,13 +513,6 @@ async def run_preflight(
     except Exception as exc:
         error, retryable = _error_code(exc)
         if request.freshness_mode == "allow_stale":
-            fallback = load_stale_record(
-                cache,
-                request.package,
-                request.ecosystem,
-                request.exact_version,
-                max_age=MAX_STALE_AGE_SECONDS,
-            )
             if fallback is not None:
                 record, info = fallback
                 loaded = (
@@ -489,6 +521,7 @@ async def run_preflight(
                     record["content"],
                     True,
                     {
+                        "document_version": record.get("version"),
                         "source": record.get("source"),
                         "source_url": record.get("source_url"),
                         "fetched_at": record.get("fetched_at"),
@@ -587,9 +620,18 @@ def main() -> int:
         except Exception as exc:
             error, retryable = _error_code(exc)
             response = build_error_response(error, retryable=retryable)
-        sys.stdout.buffer.write(_bounded_json_bytes(response))
+        encoded = _bounded_json_bytes(response)
+        sys.stdout.buffer.write(encoded)
         sys.stdout.buffer.write(b"\n")
-        return 0 if response.get("found") is True else 1
+        emitted = json.loads(encoded)
+        usable = (
+            emitted.get("found") is True
+            and bool(emitted.get("context", "").strip())
+            and not emitted.get("receipt", {})
+            .get("selection", {})
+            .get("no_match", True)
+        )
+        return 0 if usable else 1
     finally:
         cache.close()
 

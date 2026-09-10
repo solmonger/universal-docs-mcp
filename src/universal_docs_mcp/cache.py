@@ -177,7 +177,7 @@ class DocsCache:
         return decoded if isinstance(decoded, dict) else None
 
     def get_stale(self, key: str, max_age: int = 7 * 24 * 60 * 60) -> Optional[dict]:
-        """Read one expired value for an explicit, bounded stale fallback.
+        """Read one retained value for an explicit, bounded failed-check fallback.
 
         The document's embedded ``fetched_at`` is authoritative.  SQLite's
         row timestamp records cache writes and therefore cannot be used to
@@ -208,8 +208,6 @@ class DocsCache:
         except (TypeError, ValueError, OverflowError, RecursionError):
             return None
         if not 0 <= age <= max_age:
-            return None
-        if age < self.ttl:
             return None
         return decoded
 

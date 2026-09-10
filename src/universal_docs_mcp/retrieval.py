@@ -47,6 +47,7 @@ def _loaded_from_record(
     record: dict[str, Any],
     info: PackageInfo,
     *,
+    version: str,
     metadata_refreshed: bool,
     cached: bool,
 ) -> tuple[PackageInfo, str, str, bool, dict[str, Any]]:
@@ -54,8 +55,8 @@ def _loaded_from_record(
     source = record.get("source")
     source_url = record.get("source_url")
     fetched_at = record.get("fetched_at")
-    version = record.get("version") or info.latest_stable
     provenance = {
+        "document_version": version,
         "source": source,
         "source_url": source_url,
         "fetched_at": fetched_at,
@@ -153,7 +154,9 @@ async def retrieve_document(
     if record is not None:
         info = _record_info(record)
         assert info is not None
-        return _loaded_from_record(record, info, metadata_refreshed=False, cached=True)
+        return _loaded_from_record(
+            record, info, version=requested, metadata_refreshed=False, cached=True
+        )
 
     info = await fetch_package_fn(package, ecosystem)
     if not info:
@@ -203,10 +206,12 @@ async def retrieve_document(
     # Keep exact aliases and a latest fallback alias in the shared cache.  The
     # latest alias is only a stale fallback candidate; it is never a fresh hit.
     cache.set(f"docrequest-v4:{namespace}:{package}:{version}", record)
-    cache.set(f"docrequest-v4:{namespace}:{package}:latest", record)
+    if requested is None or version == info.latest_stable:
+        cache.set(f"docrequest-v4:{namespace}:{package}:latest", record)
     return _loaded_from_record(
         record,
         info,
+        version=version,
         metadata_refreshed=metadata_refreshed,
         cached=was_cached,
     )
