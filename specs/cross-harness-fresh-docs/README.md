@@ -17,8 +17,8 @@ Give models relevant, bounded, cited documentation before a run via a host hook,
 | Claude Code | Native whole-packet fixture proof verified | Synchronous UserPromptSubmit adapter and actual host event/context receipt; unit-test formatting is not a host run. |
 | Codex | Native whole-packet fixture proof verified | Documented prompt hook plus actual context receipt; unsupported local versions explicitly reported. |
 | Hermes | Native first/next/post-compaction delivery with live PyPI verified | Documented pre_llm_call plugin with source/receipt in actual pre-model input; retain current tool/manifest permission boundaries. |
-| OpenClaw | Isolated maker active; native acceptance pending | Documented before_prompt_build seam; runtime-specific proof; no blanket claim across runtime adapters. |
-| Pi | Isolated maker active; native acceptance pending | Trusted extension before_agent_start path; Pi has no native MCP, so do not advertise it as native. |
+| OpenClaw | Native lifecycle and live-source first/next delivery verified | Documented before_prompt_build seam; runtime-specific proof; no blanket claim across runtime adapters. |
+| Pi | Native lifecycle and live-source first/next delivery verified | Trusted extension before_agent_start path; Pi has no native MCP, so do not advertise it as native. |
 | Acceptance | Depends on candidate | Frozen source, fresh installed wheel, offline/live/fault tests, exact-object independent review, honest five-harness matrix; current live rollback remains retained. |
 
 ## Initial evidence
@@ -27,9 +27,9 @@ The typed-contract change has RED receipts for missing schemas and unsanitized o
 
 ## Next agent prompt
 
-Continue on `feat/cross-harness-fresh-docs`. Package and cataloged official-source requests now share the parser/retrieval/delivery core. Neutral and command-hook exits must describe the emitted bytes; packets retain version-binding uncertainty, full source hash and fetch/check observations. Latest parent suite: 252 passed / 11 deliberately skipped. Native Claude/Codex preserve the entire 8-KiB packet, not merely its header/footer; the Codex example was corrected after a failing full-packet comparison. Native Hermes also ran a separate real-PyPI first/next/post-compaction gate with three increasing fetch timestamps and unchanged system/durable-user content.
+Continue on `feat/cross-harness-fresh-docs`. Package and cataloged official-source requests now share the parser/retrieval/delivery core. Neutral and command-hook exits must describe the emitted bytes; packets retain version-binding uncertainty, full source hash and fetch/check observations. Latest parent suite: 252 passed / 12 deliberately skipped. Native Claude/Codex preserve the entire 8-KiB packet, not merely its header/footer; the Codex example was corrected after a failing full-packet comparison. Native Hermes also ran a separate real-PyPI first/next/post-compaction gate with three increasing fetch timestamps and unchanged system/durable-user content.
 
-Next pickup: integrate the OpenClaw/Pi maker results, then freeze the whole candidate for independent exact-object review and fresh installed-wheel/host checks. The shared Node bridge is already implemented and has eight executed checks; do not fork receipt validation into either host. Keep `cbcd35c` as the existing reviewed live installation. All new hooks remain local candidates: no other-profile changes, public release or broadened live access without corresponding approval. Host-fixture proof, live-source proof, installed-artifact proof and model consumption are distinct claims.
+Next pickup: freeze the joined candidate for independent exact-object review and fresh installed-wheel/host checks. All five named seams have execution evidence; OpenClaw and Pi now also have parent-executed live-public-source first/next-prompt evidence. The shared Node bridge is already implemented and has eight executed checks; do not fork receipt validation into either host. Keep `cbcd35c` as the existing reviewed live installation. All new hooks remain local candidates: no other-profile changes, public release or broadened live access without corresponding approval. Host-fixture proof, live-source proof, installed-artifact proof and model consumption are distinct claims.
 
 ## Primary contracts
 

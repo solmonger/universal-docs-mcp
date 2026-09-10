@@ -1,5 +1,21 @@
 # OpenClaw hook adapter
 
+## Joined live verification
+
+The historical maker evidence below used a fixture resolver. The joined candidate
+now has an opt-in live gate using the real `universal-docs-context` CLI and public
+`requests` 2.32.3 documentation. Parent execution proved separate fresh fetch
+receipts in current-user model input on first and next prompts, not in system
+context. The LLM provider remains an explicit fixture; no paid model call or active
+profile change is claimed.
+
+Reproduce with `UNIVERSAL_DOCS_LIVE_TESTS=1`,
+`UNIVERSAL_DOCS_OPENCLAW_CLI=/absolute/isolated/openclaw/openclaw.mjs` and
+`UNIVERSAL_DOCS_HOST_EVIDENCE_DIR=/absolute/evidence`, then run:
+`python -m pytest tests/test_openclaw_live_context.py -m live -q`.
+
+## Historical maker evidence
+
 This adapter is a thin native OpenClaw plugin around the shared
 `context-bridge.mjs` boundary. It registers the documented
 `before_prompt_build` hook and returns only `{ prependContext }`, so the packet

@@ -50,8 +50,8 @@ freshness. Stale fallback requires the explicit `allow_stale` policy.
   Native checks cover first/next/post-compaction turns; an opt-in live check
   retrieves public PyPI documentation through the actual context CLI.
 - **OpenClaw / Pi:** the shared POSIX Node boundary is in
-  [adapters/node](../adapters/node/README.md). Host-specific candidates and their
-  native proof are separately gated; no active installation is implied. Pi's
+  [adapters/node](../adapters/node/README.md). Native OpenClaw and Pi lifecycle gates now also exercise live public documentation
+  through the real context CLI on first/next prompts; no active installation is implied. Pi's
   extension path is not native MCP support.
 
 All executables, request files and cache scopes are trusted fixed configuration,

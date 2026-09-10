@@ -1,5 +1,21 @@
 # Pi documentation preflight extension
 
+## Joined live verification
+
+The historical maker evidence below used a fixture resolver. The joined candidate
+now has an opt-in live gate using the real `universal-docs-context` CLI and public
+`requests` 2.32.3 documentation. Parent execution proved separate fresh fetch
+receipts in current-user model input on first and next prompts, not in system
+context. The LLM provider remains an explicit fixture; no paid model call or active
+profile change is claimed.
+
+Reproduce by setting `PI_SDK_DIR` to the isolated official SDK install,
+`UNIVERSAL_DOCS_PI_LIVE_CONTEXT_CLI` to the real installed context executable and
+`UNIVERSAL_DOCS_HOST_EVIDENCE_DIR` to an evidence directory, then run:
+`node --test adapters/node/tests/pi.lifecycle.test.mjs`.
+
+## Historical maker evidence
+
 This is a candidate Pi extension, not an active Pi installation. Pi has no native MCP support; this adapter calls the existing shared Node boundary and injects its result through Pi's documented `before_agent_start` lifecycle event.
 
 ## Implementation
@@ -34,7 +50,7 @@ The request and cache scope therefore remain fixed by trusted host configuration
 Run:
 
 ```sh
-PI_SDK_DIR=/Users/operator/.hermes/workflows/universal-docs-hardening/cross-harness-design/pi \
+PI_SDK_DIR=/absolute/isolated/pi-sdk \
   npm test
 ```
 

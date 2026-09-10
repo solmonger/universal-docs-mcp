@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0.dev1 — cross-harness development, not accepted or deployed
+## 0.4.0rc1 — cross-harness local release candidate
 
 - Advertise strict per-tool output schemas covering real success and error shapes.
 - Validate outbound results before SDK handling; replace schema violations with a sanitized error.

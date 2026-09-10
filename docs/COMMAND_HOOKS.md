@@ -184,6 +184,6 @@ UNIVERSAL_DOCS_HOST_TESTS=1 .venv/bin/python -m pytest tests/test_command_hook_h
 ```
 
 The test writes host receipts to
-`/Users/operator/.hermes/workflows/universal-docs-hardening/cross-harness-design/command-hooks/`
+the private `cross-harness-design/command-hooks/` evidence directory
 when `UNIVERSAL_DOCS_HOST_EVIDENCE_DIR` is set. A skipped or failed host test
 is an unverified gate, never compatibility proof.

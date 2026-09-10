@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -16,9 +16,9 @@ async function sdkImport(relativePath) {
   return import(pathToFileURL(join(packageRoot, relativePath)).href);
 }
 
-async function createContextFixture(frame) {
+async function createContextFixture(frame, realExecutable) {
   const root = await mkdtemp(join(tmpdir(), 'pi-docs-fixture-'));
-  const executable = join(root, 'universal-docs-context');
+  const executable = realExecutable || join(root, 'universal-docs-context');
   const requestFile = join(root, 'request.json');
   const outputFile = join(root, 'frame.json');
   await writeFile(requestFile, JSON.stringify({
@@ -28,20 +28,24 @@ async function createContextFixture(frame) {
     requested_version: '2.32.3',
     query: 'install',
     freshness_mode: 'require_check',
+    context_max_bytes: 12000,
+    deadline_ms: 8000,
   }));
-  await writeFile(outputFile, JSON.stringify(frame));
-  await writeFile(executable, `#!${process.execPath}
+  if (!realExecutable) {
+    await writeFile(outputFile, JSON.stringify(frame));
+    await writeFile(executable, `#!${process.execPath}
 const fs = require('node:fs');
 process.stdout.write(fs.readFileSync(${JSON.stringify(outputFile)}, 'utf8'));
 `);
-  await chmod(executable, 0o700);
+    await chmod(executable, 0o700);
+  }
   return {
     root,
     options: {
       executable,
       requestFile,
       cacheDir: join(root, 'cache'),
-      timeoutMs: 3000,
+      timeoutMs: realExecutable ? 10000 : 3000,
     },
   };
 }
@@ -82,7 +86,7 @@ function fixtureProvider(capture, piAI) {
         maxTokens: 128,
       }],
       streamSimple(model, context, options) {
-        capture.push({ model, context });
+        capture.push(structuredClone({ model, context }));
         const stream = piAI.createAssistantMessageEventStream();
         const message = {
           role: 'assistant',
@@ -115,14 +119,14 @@ function fixtureProvider(capture, piAI) {
   };
 }
 
-async function runSession({ frame, promptCount = 2 }) {
+async function runSession({ frame, promptCount = 2, realContextExecutable }) {
   const [codingAgent, piAI] = await Promise.all([
     sdkImport('@earendil-works/pi-coding-agent/dist/index.js'),
     sdkImport('@earendil-works/pi-ai/dist/index.js'),
   ]);
   const docsExtension = (await import(extensionURL.href)).default;
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'pi-sdk-isolated-'));
-  const fixture = await createContextFixture(frame);
+  const fixture = await createContextFixture(frame, realContextExecutable);
   const previous = configureEnvironment(fixture.options);
   const capture = [];
   try {
@@ -221,6 +225,47 @@ test('Pi SDK lifecycle preserves missing-context truth and continues explicitly'
     assert.ok(missingContext, 'provider received the explicit missing-context message');
     assert.match(missingContext, /delivery_unavailable/);
     assert.ok(!modelText.includes('REQUESTS INSTALL PACKET'));
+  } finally {
+    await rm(result.fixtureRoot, { recursive: true, force: true });
+    await rm(result.fixtureRootToRemove, { recursive: true, force: true });
+  }
+});
+
+test('Pi SDK delivers freshly retrieved public docs for first and next prompts', {
+  skip: !sdkRoot || !process.env.UNIVERSAL_DOCS_PI_LIVE_CONTEXT_CLI,
+}, async () => {
+  const result = await runSession({ realContextExecutable: process.env.UNIVERSAL_DOCS_PI_LIVE_CONTEXT_CLI });
+  try {
+    assert.equal(result.capture.length, 2);
+    const packets = [];
+    const fetchedAt = [];
+    for (const { context } of result.capture) {
+      const docsMessages = context.messages.filter((message) => Array.isArray(message.content)
+        && message.content.some((part) => part.type === 'text' && part.text.includes('UNIVERSAL-DOCS PREFLIGHT CONTEXT PACKET v1')));
+      assert.ok(docsMessages.length > 0, JSON.stringify(context.messages));
+      const message = docsMessages.at(-1);
+      assert.equal(message.role, 'user');
+      const packet = message.content.find((part) => part.type === 'text' && part.text.includes('UNIVERSAL-DOCS PREFLIGHT')).text;
+      assert.ok(packet.includes('Target version: "2.32.3"'));
+      assert.ok(packet.includes('registry_version') && packet.includes('upstream_checked'));
+      assert.ok(packet.includes('Source SHA-256:') && packet.includes('END UNTRUSTED DOCUMENTATION DATA'));
+      assert.ok(!String(context.systemPrompt || '').includes('UNIVERSAL-DOCS PREFLIGHT'));
+      const match = packet.match(/Fetched at \(Unix seconds\): ([0-9.]+)/);
+      assert.ok(match, packet);
+      fetchedAt.push(Number(match[1])); packets.push(packet);
+    }
+    assert.equal(new Set(fetchedAt).size, 2);
+    assert.ok(!JSON.stringify(result.capture[0].context.messages).includes('fixture prompt 2'));
+    if (process.env.UNIVERSAL_DOCS_HOST_EVIDENCE_DIR) {
+      await mkdir(process.env.UNIVERSAL_DOCS_HOST_EVIDENCE_DIR, { recursive: true });
+      await writeFile(join(process.env.UNIVERSAL_DOCS_HOST_EVIDENCE_DIR, 'pi-live-context.json'), JSON.stringify({
+        schema: 'universal-docs.pi-live-proof/v1', observed_at: new Date().toISOString(),
+        source_type: 'real_public_preflight', provider_type: 'in_process_fixture',
+        paid_model_call: false, active_profile_touched: false, sdk_root: sdkRoot,
+        context_cli: process.env.UNIVERSAL_DOCS_PI_LIVE_CONTEXT_CLI,
+        fetched_at: fetchedAt, current_user_packets: packets, provider_inputs: result.capture,
+      }, null, 2));
+    }
   } finally {
     await rm(result.fixtureRoot, { recursive: true, force: true });
     await rm(result.fixtureRootToRemove, { recursive: true, force: true });
