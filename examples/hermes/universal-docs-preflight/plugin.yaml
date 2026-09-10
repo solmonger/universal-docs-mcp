@@ -1,0 +1,48 @@
+manifest_version: 2
+name: universal-docs-preflight
+version: "0.1.0"
+description: Inject bounded universal-docs preflight context once per Hermes turn.
+author: Hermes Agent
+tags:
+  - documentation
+  - hooks
+  - preflight
+kind: standalone
+provides_hooks:
+  - pre_llm_call
+hooks:
+  - pre_llm_call
+config_schema:
+  executable:
+    type: string
+    required: true
+    description: Absolute path to the trusted universal-docs-preflight executable.
+  package:
+    type: string
+    required: true
+    description: Explicit package name to preflight; never taken from inbound text.
+  ecosystem:
+    type: string
+    default: python
+  selection:
+    type: string
+    default: latest
+  requested_version:
+    type: string
+    required: false
+  query:
+    type: string
+    required: true
+    description: Known matching term; no intent is inferred from inbound user text.
+  section_ids:
+    type: array
+    default: []
+  context_max_bytes:
+    type: integer
+    default: 8000
+  freshness_mode:
+    type: string
+    default: require_check
+  deadline_ms:
+    type: integer
+    default: 3000
