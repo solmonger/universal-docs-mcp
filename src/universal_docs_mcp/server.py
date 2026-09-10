@@ -34,6 +34,7 @@ from .compaction import (
     parse_sections,
     section_map,
 )
+from .contracts import RESULT_TYPES, output_schema
 from .docs_fetcher import fetch_docs_content_with_provenance
 from .lockfile import manifest_kind, read_pins
 from .network import ResponseTooLarge, network_lifespan
@@ -86,6 +87,7 @@ async def list_tools() -> list[types.Tool]:
             name=name,
             description=description,
             inputSchema=TOOL_ARGS[name].model_json_schema(),
+            outputSchema=output_schema(name),
             annotations=types.ToolAnnotations(
                 readOnlyHint=True,
                 destructiveHint=False,
@@ -135,6 +137,19 @@ async def mcp_call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolR
         return types.CallToolResult(
             content=content, structuredContent=json.loads(content[0].text), isError=True
         )
+    if name in RESULT_TYPES:
+        try:
+            RESULT_TYPES[name].validate_python(payload)
+        except ValidationError:
+            # SDK schema diagnostics can include the invalid result itself.
+            # Replace it before SDK-side validation; never echo the exception.
+            logger.error("Tool result violated its output contract")
+            content = _error("invalid_tool_result")
+            return types.CallToolResult(
+                content=content,
+                structuredContent=json.loads(content[0].text),
+                isError=True,
+            )
     return result
 
 

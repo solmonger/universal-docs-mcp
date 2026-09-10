@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0.dev1 — cross-harness development, not accepted or deployed
+
+- Advertise strict per-tool output schemas covering real success and error shapes.
+- Validate outbound results before SDK handling; replace schema violations with a sanitized error.
+- Add schema/failure regressions and preserve text/structured output equality.
+- Keep the maintained SDK v1 runtime pending executed cross-version client evidence.
+
 ## 0.3.0rc2 — local review-repair candidate, not yet published
 
 - Replace raw dependency/SDK diagnostics with attributed, severity-preserving redacted events in the standalone process; keep structured tool errors and sanitized application failures visible.

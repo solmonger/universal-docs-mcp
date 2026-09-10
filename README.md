@@ -2,7 +2,9 @@
 
 A local, read-only MCP server for **version-aware package READMEs and registry descriptions** from PyPI, npm, and crates.io/GitHub. It helps coding agents use project-relevant documentation rather than assume their training data matches an installed dependency.
 
-This source tree is **0.3.0rc2**, a local release candidate. Do not assume the public repository or PyPI contains this revision. It is not a full API-documentation crawler or symbol-search service.
+This source tree is **0.4.0.dev1**, an unaccepted local development candidate. The previously reviewed/deployed build remains **0.3.0rc2**. Do not assume the public repository or PyPI contains this revision. It is not a full API-documentation crawler or symbol-search service.
+
+Cross-harness work is tracked in [the implementation spec](specs/cross-harness-fresh-docs/README.md). Typed output contracts are implemented; automatic per-run context and July-2026 protocol compatibility are not yet claimed.
 
 ## What it does
 
@@ -97,6 +99,8 @@ Package tools accept `ecosystem` aliases: Python (`python`, `pypi`, `pip`), Java
 - **Resource limits:** four simultaneous tools, 45-second tool deadline, 20-second per-request deadline, 8 MiB upstream body limit, 1 MiB document/manifest limits, at most 1,000 heading sections per document. Network redirects, inherited proxies, and unsolicited compressed responses are refused. Only the fixed public registry/GitHub API hosts are fetched.
 - **Cache limits:** 256 entries, 2 MiB per encoded value, 32 MiB total logical value bytes. Writes prune expired/oldest entries. These are logical quotas, not a byte-perfect SQLite-file/RSS guarantee; existing database pages can be reused without shrinking the file. Cache failure degrades to uncached retrieval, not false success.
 - **Trust:** fetched content is untrusted data, not agent instructions. Tool availability does not guarantee an agent uses it. This is a single-user local stdio service, not an authenticated multi-tenant network service.
+
+Each tool advertises a strict `outputSchema` for successful results and errors. Outbound payloads are validated before SDK handling; invalid results become `invalid_tool_result` without reflecting their contents.
 
 Tool failures set MCP `isError: true` and return the same JSON object in text and structured content. Examples include `invalid_arguments`, `manifest_access_disabled`, `manifest_error`, `package_not_found`, `documentation_not_found`, `no_stable_release`, `upstream_unavailable`, `upstream_invalid`, `server_busy`, and `tool_timeout`. `found: null` denotes unknown/unavailable, not proven absence. Repeatedly retrying a permanent validation error will not help.
 
