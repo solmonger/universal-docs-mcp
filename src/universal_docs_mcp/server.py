@@ -14,7 +14,6 @@ import asyncio
 import json
 import logging
 import os
-import time
 import weakref
 from pathlib import Path
 from typing import Any
@@ -26,7 +25,7 @@ from mcp.server import Server
 from pydantic import ValidationError
 
 from . import __version__
-from .cache import DEFAULT_TTL, DocsCache
+from .cache import DocsCache
 from .compaction import (
     compact,
     estimate_tokens,
@@ -38,8 +37,9 @@ from .contracts import RESULT_TYPES, output_schema
 from .docs_fetcher import fetch_docs_content_with_provenance
 from .lockfile import manifest_kind, read_pins
 from .network import ResponseTooLarge, network_lifespan
-from .registries import PackageInfo, fetch_package
-from .validation import ALIASES, TOOL_ARGS
+from .registries import fetch_package
+from .retrieval import retrieve_document
+from .validation import TOOL_ARGS
 
 logger = logging.getLogger(__name__)
 
@@ -258,96 +258,19 @@ async def _handle_get_info(args: dict) -> list[types.TextContent]:
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
-def _valid_doc_record(record) -> bool:
-    if not isinstance(record, dict) or not isinstance(record.get("content"), str):
-        return False
-    timestamp = record.get("fetched_at")
-    if not isinstance(timestamp, (int, float)):
-        return False
-    return bool(record["content"]) and 0 <= time.time() - timestamp < getattr(
-        cache, "ttl", DEFAULT_TTL
-    )
-
-
 async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
-    """Exact TTL-valid docs need no fresh metadata; latest always resolves anew."""
-    package = args["package"]
-    ecosystem = args.get("ecosystem")
-    requested = args.get("version")
-    namespace = ALIASES.get(ecosystem, ecosystem) if ecosystem else "auto"
-    request_key = f"docrequest-v4:{namespace}:{package}:{requested}"
-    record = None
-    if requested and not args.get("force_refresh"):
-        keys = [request_key]
-        if namespace != "auto":
-            keys.append(f"docsraw-v4:{namespace}:{package}:{requested}")
-        for key in keys:
-            candidate = cache.get(key)
-            if _valid_doc_record(candidate) and isinstance(
-                candidate.get("package_info"), dict
-            ):
-                record = candidate
-                break
-    if _valid_doc_record(record) and isinstance(record.get("package_info"), dict):
-        info = PackageInfo(**record["package_info"])
-        version = requested
-        was_cached = True
-        metadata_refreshed = False
-    else:
-        info = await fetch_package(package, ecosystem)
-        if not info:
-            return None
-        version = requested or info.latest_stable
-        if not version:
-            raise RetrievalMiss("no_stable_release")
-        cache_key = f"docsraw-v4:{info.ecosystem}:{info.name}:{version}"
-        record = None if args.get("force_refresh") else cache.get(cache_key)
-        metadata_refreshed = True
-        was_cached = _valid_doc_record(record)
-        if not was_cached:
-            fetched = await fetch_docs_content_with_provenance(
-                package=info.name,
-                ecosystem=info.ecosystem,
-                docs_url=info.docs_url,
-                repo_url=info.repository,
-                version=version,
-            )
-            if not fetched:
-                return info, "", "", False, {}
-            if len(fetched.content.encode("utf-8")) > 1024 * 1024:
-                raise ValueError("document_too_large")
-            record = {
-                "content": fetched.content,
-                "source": fetched.source,
-                "source_url": fetched.source_url,
-                "fetched_at": time.time(),
-                "package_info": {
-                    key: getattr(info, key, None)
-                    for key in PackageInfo.__dataclass_fields__
-                },
-            }
-            cache.set(cache_key, record)
-        # Latest resolution also establishes an exact alias in the requested
-        # namespace. Auto must never guess an ecosystem from unrelated raw keys.
-        cache.set(f"docrequest-v4:{namespace}:{package}:{version}", record)
-    content = record["content"]
-    provenance = {
-        key: record.get(key) for key in ("source", "source_url", "fetched_at")
-    }
-    provenance["metadata_refreshed"] = metadata_refreshed
-    provenance["version_binding"] = (
-        "unverified_git_ref"
-        if provenance["source"] == "github_readme"
-        else "registry_version"
-    )
-    provenance["content_trust"] = "untrusted_upstream"
-    header = (
-        f"# {info.name} v{version} ({info.ecosystem})\n"
-        f"Source: {provenance['source']}\n"
-        f"Version binding: {provenance['version_binding']}\n"
-        f"Source URL: {provenance['source_url']}\n\n---\n\n"
-    )
-    return info, header, content, was_cached, provenance
+    """Compatibility wrapper around the SDK-neutral retrieval core."""
+    try:
+        return await retrieve_document(
+            args,
+            cache=cache,
+            fetch_package_fn=fetch_package,
+            fetch_document_fn=fetch_docs_content_with_provenance,
+        )
+    except ValueError as exc:
+        if str(exc) == "no_stable_release":
+            raise RetrievalMiss("no_stable_release") from None
+        raise
 
 
 async def _handle_get_docs(args: dict) -> list[types.TextContent]:

@@ -4,7 +4,7 @@ A local, read-only MCP server for **version-aware package READMEs and registry d
 
 This source tree is **0.4.0.dev1**, an unaccepted local development candidate. The previously reviewed/deployed build remains **0.3.0rc2**. Do not assume the public repository or PyPI contains this revision. It is not a full API-documentation crawler or symbol-search service.
 
-Cross-harness work is tracked in [the implementation spec](specs/cross-harness-fresh-docs/README.md). Typed output contracts are implemented; automatic per-run context and July-2026 protocol compatibility are not yet claimed.
+Cross-harness work is tracked in [the implementation spec](specs/cross-harness-fresh-docs/README.md). The freshness-aware `universal-docs-preflight` CLI is implemented as a source candidate; automatic per-harness context injection and July-2026 protocol compatibility are not yet claimed.
 
 ## What it does
 
@@ -70,6 +70,39 @@ Do not point the root at your home directory. Root-relative manifest paths are s
 | `get_package_docs` | Compact documentation or one section; `max_tokens` defaults to 1500, range 200–6000 |
 | `get_project_dependencies` | Supported manifest declarations, safe exact pins, extras/markers, and redaction/registry-lookup flags |
 | `cache_stats` | Entry counts and `available`; counts are `null` when cache state is unknown |
+
+### Fresh preflight CLI
+
+The package also installs `.venv/bin/universal-docs-preflight`. It reads one
+strict JSON request from stdin and writes exactly one JSON object to stdout; it
+does not read a project manifest or execute a package manager. The canonical
+request shape is:
+
+```json
+{
+  "package": "requests",
+  "ecosystem": "python",
+  "selection": "requested",
+  "requested_version": "2.32.3",
+  "query": "timeouts and retries",
+  "section_ids": ["usage"],
+  "context_max_bytes": 12000,
+  "freshness_mode": "require_check"
+}
+```
+
+Use `selection: "latest"` without a version, and choose one explicit
+`freshness_mode`: `require_check` bypasses document cache, `allow_cache` may
+reuse a valid exact document (but latest still checks registry metadata), and
+`allow_stale` may return a bounded expired exact record only after an upstream
+failure. A response's `receipt` keeps `target_version`, `requested_version`,
+`installed_version: null`/`installed_resolution: "unknown"`, and
+`latest_observed` separate. It also reports `fetched_at`, successful
+`checked_at`/`latest_checked_at`, cache/stale/unknown state, age, SHA-256,
+source URL, and version binding. `context` is query/section-selected,
+UTF-8-byte bounded, and labeled untrusted; `selection.no_match` is explicit
+instead of silently dumping the document. Exit status is 0 for usable context,
+1 for a retrieval miss/unavailable response, and 2 for invalid input.
 
 Package tools accept `ecosystem` aliases: Python (`python`, `pypi`, `pip`), JavaScript/TypeScript (`javascript`, `typescript`, `npm`, `js`, `ts`), Rust (`rust`, `cargo`, `crate`). Omit it to try applicable registries in that order; specify it when a package name exists in multiple ecosystems.
 

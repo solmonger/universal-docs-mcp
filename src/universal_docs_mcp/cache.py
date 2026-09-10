@@ -176,6 +176,43 @@ class DocsCache:
 
         return decoded if isinstance(decoded, dict) else None
 
+    def get_stale(self, key: str, max_age: int = 7 * 24 * 60 * 60) -> Optional[dict]:
+        """Read one expired value for an explicit, bounded stale fallback.
+
+        The document's embedded ``fetched_at`` is authoritative.  SQLite's
+        row timestamp records cache writes and therefore cannot be used to
+        make an old document look fresh after an alias is rewritten.
+        """
+        try:
+            row = (
+                self._get_conn()
+                .execute(
+                    "SELECT value FROM docs_cache WHERE key = ? AND length(CAST(value AS BLOB)) <= ?",
+                    (key, self.max_value_bytes),
+                )
+                .fetchone()
+            )
+        except Exception:
+            self._mark_failed()
+            return None
+        if row is None:
+            return None
+        try:
+            decoded = json.loads(row[0])
+            if not isinstance(decoded, dict):
+                return None
+            fetched_at = decoded.get("fetched_at")
+            if isinstance(fetched_at, bool) or not isinstance(fetched_at, (int, float)):
+                return None
+            age = time.time() - float(fetched_at)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return None
+        if not 0 <= age <= max_age:
+            return None
+        if age < self.ttl:
+            return None
+        return decoded
+
     def _prune_expired(self, conn: sqlite3.Connection) -> None:
         cutoff = time.time() - self.ttl
         conn.execute("DELETE FROM docs_cache WHERE fetched_at <= ?", (cutoff,))
