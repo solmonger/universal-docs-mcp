@@ -42,7 +42,7 @@ async def test_latest_cache_does_not_relabel_old_docs(monkeypatch, tmp_path):
         return FetchedDocument(
             "docs for " + str(kw["version"]),
             "pypi_description",
-            "https://pypi.org/example",
+            f"https://pypi.org/pypi/demo/{kw['version']}/json",
         )
 
     monkeypatch.setattr(server, "fetch_package", package)
