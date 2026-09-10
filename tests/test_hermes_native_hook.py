@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 CANDIDATE = ROOT / "examples" / "hermes" / "universal-docs-preflight"
-INSTALLED_HERMES_PYTHON = Path("/Users/operator/.hermes/hermes-agent/.venv/bin/python")
+INSTALLED_HERMES_PYTHON = Path(
+    os.environ.get(
+        "UNIVERSAL_DOCS_HERMES_PYTHON",
+        str(Path.home() / ".hermes/hermes-agent/.venv/bin/python"),
+    )
+)
 
 
 _NATIVE_DRIVER = r"""
@@ -120,28 +128,19 @@ sys.__stdout__.write(json.dumps(result, ensure_ascii=False, separators=(",", ":"
 
 def _write_fixture_preflight(tmp_path: Path) -> tuple[Path, Path]:
     requests = tmp_path / "native-requests.jsonl"
-    executable = tmp_path / "native-preflight"
+    executable = tmp_path / "native-context"
+    frame = {
+        "schema": "universal-docs.context/v1",
+        "status": "prepared",
+        "error": None,
+        "context": "UNIVERSAL-DOCS PREFLIGHT CONTEXT PACKET v1\nStatus: prepared\nReceipt: UDCTX:fixture-native\nSource URL: https://docs.example/native/9.9.9\nUNTRUSTED DOCUMENTATION DATA\nnative-fixture-documentation",
+    }
     executable.write_text(
-        "#!" + sys.executable + "\n"
-        "import json\n"
-        "from pathlib import Path\n"
+        "#!" + sys.executable + "\nimport json,sys\nfrom pathlib import Path\n"
         f"log = Path({str(requests)!r})\n"
-        "request = json.load(__import__('sys').stdin)\n"
-        "with log.open('a', encoding='utf-8') as stream:\n"
-        "    stream.write(json.dumps(request, sort_keys=True) + '\\n')\n"
-        "json.dump({\n"
-        " 'schema': 'universal-docs.preflight/v1', 'found': True,\n"
-        " 'context': 'native-fixture-documentation',\n"
-        " 'receipt': {\n"
-        "  'schema': 'universal-docs.preflight/v1',\n"
-        "  'target': {'package': request['package'], 'target_version': '9.9.9'},\n"
-        "  'source': {'kind': 'fixture', 'url': 'https://docs.example/native/9.9.9', 'version_binding': 'fixture', 'content_sha256': 'native', 'content_bytes': 31},\n"
-        "  'freshness': {'policy': request['freshness_mode'], 'state': 'upstream_checked', 'stale': False, 'unknown': False, 'retryable': False},\n"
-        "  'selection': {'context_bytes': 31, 'truncated': False},\n"
-        "  'trust': {'content': 'untrusted_upstream', 'instructions_authoritative': False, 'execution_performed': False}\n"
-        " }, 'retryable': False\n"
-        "}, __import__('sys').stdout)\n"
-        "__import__('sys').stdout.write('\\n')\n",
+        "request = json.loads(Path(sys.argv[2]).read_text())\n"
+        "with log.open('a') as stream: stream.write(json.dumps(request)+'\\n')\n"
+        f"print({json.dumps(frame)!r})\n",
         encoding="utf-8",
     )
     executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
@@ -151,7 +150,28 @@ def _write_fixture_preflight(tmp_path: Path) -> tuple[Path, Path]:
 def test_installed_hermes_lifecycle_injects_current_user_context_in_isolated_process(
     tmp_path,
 ):
+    if os.environ.get("UNIVERSAL_DOCS_HERMES_NATIVE_TESTS") != "1":
+        pytest.skip("set UNIVERSAL_DOCS_HERMES_NATIVE_TESTS=1 for native host proof")
+    assert INSTALLED_HERMES_PYTHON.is_file(), (
+        "configured Hermes interpreter is unavailable"
+    )
     executable, requests = _write_fixture_preflight(tmp_path)
+    request_file = tmp_path / "request.json"
+    request_file.write_text(
+        json.dumps(
+            {
+                "package": "native-package",
+                "ecosystem": "python",
+                "selection": "requested",
+                "requested_version": "9.9.9",
+                "query": "native tools",
+                "section_ids": ["usage"],
+                "context_max_bytes": 4000,
+                "freshness_mode": "require_check",
+                "deadline_ms": 1000,
+            }
+        )
+    )
     home = tmp_path / "hermes-home"
     plugin_dir = home / "plugins" / "universal-docs-preflight"
     shutil.copytree(CANDIDATE, plugin_dir, ignore=shutil.ignore_patterns("__pycache__"))
@@ -163,15 +183,8 @@ def test_installed_hermes_lifecycle_injects_current_user_context_in_isolated_pro
                 "universal-docs-preflight": {
                     "settings": {
                         "executable": str(executable),
-                        "package": "native-package",
-                        "ecosystem": "python",
-                        "selection": "requested",
-                        "requested_version": "9.9.9",
-                        "query": "native tools",
-                        "section_ids": ["usage"],
-                        "context_max_bytes": 4000,
-                        "freshness_mode": "require_check",
-                        "deadline_ms": 2000,
+                        "request_file": str(request_file),
+                        "timeout_ms": 2000,
                     }
                 }
             },
@@ -234,3 +247,26 @@ def test_installed_hermes_lifecycle_injects_current_user_context_in_isolated_pro
         "compacted handoff" not in json.dumps(request) for request in child_requests
     )
     assert all("HERMES_HOME" not in json.dumps(request) for request in child_requests)
+    evidence = os.environ.get("UNIVERSAL_DOCS_HERMES_HOST_EVIDENCE_DIR")
+    if evidence:
+        import hashlib
+        from datetime import datetime, timezone
+
+        directory = Path(evidence)
+        directory.mkdir(parents=True, exist_ok=True)
+        artifact = {
+            "schema": "universal-docs.hermes-host-proof/v1",
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "scope": "native_lifecycle_message_assembly",
+            "source_type": "fixture_context_cli",
+            "provider_request_sent": False,
+            "hermes_python": str(INSTALLED_HERMES_PYTHON),
+            "adapter_sha256": hashlib.sha256(
+                (CANDIDATE / "hermes_hook.py").read_bytes()
+            ).hexdigest(),
+            "child_invocations": len(child_requests),
+            "proof": proof,
+        }
+        (directory / "hermes-native-assembly.json").write_text(
+            json.dumps(artifact, indent=2) + "\n"
+        )
