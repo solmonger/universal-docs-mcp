@@ -116,6 +116,8 @@ def parse_sections(markdown: str) -> list[Section]:
         nonlocal current
         if current is None:
             return
+        if len(sections) >= 1000:
+            raise ValueError("document_too_complex")
         body = "\n".join(current["lines"]).strip()
         slug = current["slug"]
         if slug in seen_slugs:

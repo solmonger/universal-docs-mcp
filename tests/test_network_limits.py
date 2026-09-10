@@ -86,3 +86,43 @@ async def test_scoped_npm_miss_is_not_an_invalid_python_request(monkeypatch):
         httpx, "AsyncClient", lambda **kw: original(transport=transport, **kw)
     )
     assert await registries.fetch_package("@scope/missing") is None
+
+
+async def test_broad_github_token_cannot_read_private_repository(monkeypatch):
+    calls = []
+    monkeypatch.setenv("GITHUB_TOKEN", "SYNTHETIC_BROAD_TOKEN")
+
+    async def response(url, **kwargs):
+        calls.append(url)
+        if url.endswith("/readme?ref=1.2.3"):
+            return httpx.Response(200, text="SYNTHETIC_PRIVATE_README")
+        return httpx.Response(200, json={"private": True})
+
+    monkeypatch.setattr(docs_fetcher, "get_response", response)
+    result = await docs_fetcher.fetch_readme_from_github(
+        "https://github.com/acme/private", "1.2.3"
+    )
+    assert result is None
+    assert not any("/readme" in url for url in calls)
+
+
+async def test_authenticated_public_repo_named_readme_uses_correct_metadata_endpoint(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setenv("GITHUB_TOKEN", "SYNTHETIC_PUBLIC_TOKEN")
+
+    async def response(url, **kwargs):
+        calls.append(url)
+        if url == "https://api.github.com/repos/acme/readme":
+            return httpx.Response(200, json={"private": False})
+        if url == "https://api.github.com/repos/acme/readme/readme?ref=1.2.3":
+            return httpx.Response(200, text="# Public docs")
+        return httpx.Response(404)
+
+    monkeypatch.setattr(docs_fetcher, "get_response", response)
+    result = await docs_fetcher.fetch_readme_from_github(
+        "https://github.com/acme/readme", "1.2.3"
+    )
+    assert result == "# Public docs"
+    assert calls[0] == "https://api.github.com/repos/acme/readme"

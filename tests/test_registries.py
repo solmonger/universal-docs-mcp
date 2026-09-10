@@ -9,6 +9,8 @@ from universal_docs_mcp.registries import (
     fetch_pypi,
 )
 
+pytestmark = pytest.mark.live
+
 
 @pytest.mark.asyncio
 async def test_fetch_pypi_requests():

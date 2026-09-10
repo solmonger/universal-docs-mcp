@@ -103,6 +103,13 @@ async def test_outline_paginates_section_map(monkeypatch):
     assert result["section_map_total"] == 250
 
 
+def test_excessive_heading_count_fails_without_partial_success():
+    from universal_docs_mcp.compaction import parse_sections
+
+    with pytest.raises(ValueError, match="document_too_complex"):
+        parse_sections("# Repeat\nbody\n" * 1001)
+
+
 def test_long_heading_metadata_cannot_bypass_budget():
     result = compact("## " + "x" * 100000 + "\nbody", budget_tokens=200)
     assert len(json.dumps(result)) < 65536

@@ -7,6 +7,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from . import __version__
 from .validation import InfoArgs, OutlineArgs
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -93,7 +94,7 @@ async def get_response(
     ):
         raise ValueError("unsupported_upstream_url")
     request_headers = {
-        "User-Agent": "universal-docs-mcp/0.2.0",
+        "User-Agent": f"universal-docs-mcp/{__version__}",
         **(headers or {}),
         "Accept-Encoding": "identity",
     }

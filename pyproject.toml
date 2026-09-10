@@ -1,7 +1,7 @@
 [project]
 name = "universal-docs-mcp"
-version = "0.2.0"
-description = "MCP server that fetches latest stable release documentation for any programming language, framework, or package"
+version = "0.3.0rc1"
+description = "Local MCP server for version-aware PyPI, npm and crates.io README retrieval"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff==0.16.6", "build>=1,<2", "hatchling>=1.27,<2"]
 
 [project.scripts]
 universal-docs-mcp = "universal_docs_mcp.server:main"
@@ -33,7 +33,14 @@ universal-docs-mcp = "universal_docs_mcp.server:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["live: opt-in public registry/network integration tests"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"

@@ -58,6 +58,25 @@ async def fetch_readme_from_github(
     token = os.environ.get("GITHUB_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
+        # A broad token must not turn a public documentation lookup into a
+        # private-repository read merely because registry metadata names it.
+        repository_url = api_url.rsplit("/readme", 1)[0]
+        metadata = await get_response(
+            repository_url,
+            headers={
+                "Authorization": headers["Authorization"],
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        if metadata.status_code == 404:
+            return None
+        repository = metadata.json()
+        if not isinstance(repository, dict) or not isinstance(
+            repository.get("private"), bool
+        ):
+            raise ValueError("invalid_github_visibility")
+        if repository["private"]:
+            return None
     response = await get_response(api_url, headers=headers, max_bytes=1024 * 1024)
     return response.text or None if response.status_code == 200 else None
 

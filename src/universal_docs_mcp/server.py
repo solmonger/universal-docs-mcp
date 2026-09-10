@@ -25,6 +25,7 @@ import mcp.types as types
 from mcp.server import Server
 from pydantic import ValidationError
 
+from . import __version__
 from .cache import DEFAULT_TTL, DocsCache
 from .compaction import (
     compact,
@@ -42,7 +43,7 @@ from .validation import ALIASES, TOOL_ARGS
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-server = Server("universal-docs")
+server = Server("universal-docs", version=__version__)
 cache = DocsCache()
 TOOL_TIMEOUT = 45
 MAX_CONCURRENT_TOOLS = 4
