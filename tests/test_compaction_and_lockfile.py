@@ -6,7 +6,10 @@ from universal_docs_mcp.lockfile import read_pins
 
 
 def test_compaction_keeps_structure_and_budget():
-    raw = """[![build](badge.svg)](https://example.test)\n\n# Demo\n\nintro text\n\n## Installation\n\npip install demo\n\n## API Reference\n\n""" + ("long api detail " * 300)
+    raw = (
+        """[![build](badge.svg)](https://example.test)\n\n# Demo\n\nintro text\n\n## Installation\n\npip install demo\n\n## API Reference\n\n"""
+        + ("long api detail " * 300)
+    )
     result = compact(raw, budget_tokens=80)
 
     assert result["content"]

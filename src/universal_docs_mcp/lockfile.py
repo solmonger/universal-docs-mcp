@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import re
+import stat
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10
@@ -28,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from packaging.requirements import Requirement, InvalidRequirement
+from packaging.requirements import InvalidRequirement, Requirement
 
 _SEMVER = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
 MAX_MANIFEST_BYTES = 1024 * 1024
@@ -50,8 +51,10 @@ class Pin:
     def __post_init__(self):
         # Omit whole non-version references, not just familiar token query keys.
         # URL paths, fragments, encoded userinfo and local paths can all be private.
-        if not self.registry_lookup or not re.fullmatch(r"[0-9.*xX<>=!~^, |+\-a-zA-Z]*", self.spec) or (
-            self.spec and not re.search(r"[0-9*]", self.spec)
+        if (
+            not self.registry_lookup
+            or not re.fullmatch(r"[0-9.*xX<>=!~^, |+\-a-zA-Z]*", self.spec)
+            or (self.spec and not re.search(r"[0-9*]", self.spec))
         ):
             self.spec = "[redacted]"
             self.pinned = None
@@ -103,9 +106,16 @@ def _requirement(line: str, source: str) -> Pin:
     except InvalidRequirement:
         raise ValueError("invalid_or_unsupported_requirement") from None
     spec = req.url if req.url is not None else str(req.specifier)
-    return Pin(req.name, "python", spec, _exact_from_spec(spec), source,
-               registry_lookup=req.url is None, extras=sorted(req.extras),
-               marker=str(req.marker) if req.marker else None)
+    return Pin(
+        req.name,
+        "python",
+        spec,
+        _exact_from_spec(spec),
+        source,
+        registry_lookup=req.url is None,
+        extras=sorted(req.extras),
+        marker=str(req.marker) if req.marker else None,
+    )
 
 
 def parse_requirements(text: str, source: str) -> list[Pin]:
@@ -164,7 +174,9 @@ def parse_cargo_toml(text: str, source: str) -> list[Pin]:
             elif isinstance(val, dict):
                 spec = val.get("version", "")
                 name = val.get("package", name)
-                registry_lookup = not any(key in val for key in ("git", "path", "registry", "workspace"))
+                registry_lookup = not any(
+                    key in val for key in ("git", "path", "registry", "workspace")
+                )
             else:
                 raise ValueError("invalid_dependency_spec")
             if not isinstance(spec, str) or not isinstance(name, str):
@@ -174,7 +186,9 @@ def parse_cargo_toml(text: str, source: str) -> list[Pin]:
                     name=name,
                     ecosystem="rust",
                     spec=spec,
-                    pinned=spec[1:].strip() if re.fullmatch(r"=\s*" + _SEMVER, spec) else None,
+                    pinned=spec[1:].strip()
+                    if re.fullmatch(r"=\s*" + _SEMVER, spec)
+                    else None,
                     source=source,
                     registry_lookup=registry_lookup,
                 )
@@ -195,9 +209,15 @@ def parse_cargo_lock(text: str, source: str) -> list[Pin]:
         pkg = _mapping(pkg)
         name = pkg.get("name")
         version = pkg.get("version")
-        if not isinstance(name, str) or not isinstance(version, str) or not re.fullmatch(_SEMVER, version):
+        if (
+            not isinstance(name, str)
+            or not isinstance(version, str)
+            or not re.fullmatch(_SEMVER, version)
+        ):
             raise ValueError("invalid_locked_package")
-        registry_lookup = pkg.get("source") == "registry+https://github.com/rust-lang/crates.io-index"
+        registry_lookup = (
+            pkg.get("source") == "registry+https://github.com/rust-lang/crates.io-index"
+        )
         pins.append(
             Pin(
                 name=name,
@@ -250,10 +270,14 @@ def _read_scoped(path: Path, root: Path) -> bytes:
     directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+            )
             os.close(directory)
             directory = child
-        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        descriptor = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+        )
         with os.fdopen(descriptor, "rb") as stream:
             metadata = os.fstat(stream.fileno())
             if not stat.S_ISREG(metadata.st_mode):

@@ -17,8 +17,8 @@ budget shaping, not billing accuracy.
 
 from __future__ import annotations
 
-import re
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -32,11 +32,11 @@ _PRIORITY_PATTERNS = [
 
 _NOISE_LINE = re.compile(
     r"^("
-    r"\[!\[.*\]\(.*\)\]\(.*\)"          # badge: [![alt](img)](link)
-    r"|!\[.*\]\(.*\)"                  # bare image
-    r"|<!--.*?-->"                     # html comment (single line)
-    r"|-{3,}|_{3,}|\*{3,}"             # horizontal rules
-    r"|<br\s*/?>"                      # stray breaks
+    r"\[!\[.*\]\(.*\)\]\(.*\)"  # badge: [![alt](img)](link)
+    r"|!\[.*\]\(.*\)"  # bare image
+    r"|<!--.*?-->"  # html comment (single line)
+    r"|-{3,}|_{3,}|\*{3,}"  # horizontal rules
+    r"|<br\s*/?>"  # stray breaks
     r")\s*$"
 )
 
@@ -125,7 +125,9 @@ def parse_sections(markdown: str) -> list[Section]:
             slug = f"{slug}-{n}"
         seen_slugs.add(slug)
         sections.append(
-            Section(slug=slug, title=current["title"], level=current["level"], body=body)
+            Section(
+                slug=slug, title=current["title"], level=current["level"], body=body
+            )
         )
         current = None
 
@@ -135,7 +137,12 @@ def parse_sections(markdown: str) -> list[Section]:
             flush()
             title = m.group(2).strip()
             slug = slugify(title)
-            current = {"title": title, "level": len(m.group(1)), "slug": slug, "lines": []}
+            current = {
+                "title": title,
+                "level": len(m.group(1)),
+                "slug": slug,
+                "lines": [],
+            }
         elif current is None:
             intro_lines.append(line)
         else:
@@ -144,9 +151,7 @@ def parse_sections(markdown: str) -> list[Section]:
 
     intro = "\n".join(intro_lines).strip()
     if intro:
-        sections.insert(
-            0, Section(slug="intro", title="(intro)", level=0, body=intro)
-        )
+        sections.insert(0, Section(slug="intro", title="(intro)", level=0, body=intro))
     return sections
 
 
@@ -157,8 +162,10 @@ def _priority(title: str) -> int:
     return len(_PRIORITY_PATTERNS)
 
 
-def section_map(sections: list[Section], offset: int = 0, limit: int = 100) -> list[dict]:
-    return [s.to_dict() for s in sections[offset:offset + min(limit, 100)]]
+def section_map(
+    sections: list[Section], offset: int = 0, limit: int = 100
+) -> list[dict]:
+    return [s.to_dict() for s in sections[offset : offset + min(limit, 100)]]
 
 
 def get_section(sections: list[Section], key: str) -> Optional[Section]:
