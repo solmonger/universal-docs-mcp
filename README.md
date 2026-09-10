@@ -90,13 +90,25 @@ Package tools accept `ecosystem` aliases: Python (`python`, `pypi`, `pip`), Java
 - Cargo bare versions are ranges. Git/path/workspace/private-registry declarations are not public-registry pins. Python extras and environment markers are preserved but not evaluated.
 - Non-version references are returned as `[redacted]` with `spec_redacted: true` and `registry_lookup: false`. URL/Git/path-like dependency names are rejected rather than returned as identities. This is a supported-name syntax check, not general-purpose secret detection in otherwise valid names or prose; only grant access to trusted manifests.
 
+## Versioned official-source candidate
+
+The development library also has one fixed catalog entry: `mcp-tools` at
+`2026-07-28`, fetched as Markdown from the canonical MCP specification site.
+`fetch_official_source` accepts only a catalog ID and exact version—not a URL,
+`latest` alias, registry homepage, or arbitrary host. It reuses the bounded
+transport, caps the body at 1 MiB, rejects redirects/HTML/invalid UTF-8, and
+returns source text as data. A versioned URL is not proof the publisher can
+never change it; retain the acquisition time and content hash in receipts.
+This library path is live-fetch tested but **not yet connected to the MCP tools
+or a per-run hook**. The generic registry URL allowlist is unchanged.
+
 ## Guarantees and limits
 
 - **Documentation coverage:** READMEs/registry descriptions, not full API sites, symbol signatures, or all programming languages. Rust exact docs.rs retrieval is not implemented.
 - **Version binding:** `registry_version` means a version-specific registry endpoint; `unverified_git_ref` means a GitHub README at that version string. Git refs can move, tags may be `v`-prefixed, and monorepos may not match. A miss does not trigger default-branch fallback.
 - **Freshness:** `fetched_at` is local acquisition time, not upstream publication time. Cache TTL is 24 hours. `metadata_refreshed: false` means an exact cache hit did not contact the registry. A previous latest lookup also establishes an exact-version alias. Auto-detection reuses only an established namespace association; it never guesses a registry from unrelated cached packages. Omitted versions are resolved anew before raw-cache lookup. `force_refresh: true` bypasses the relevant cache; it cannot certify upstream accuracy.
 - **Budgets:** `max_tokens` is a four-characters-per-token content estimate, not model-token accounting. Outlines have at most 100 entries per page; compact maps/omitted-section lists expose totals when capped. Long display headings are marked truncated. The serialized MCP `CallToolResult` has a separate 128 KiB cap, including both text and structured representations and JSON escaping; the transport envelope/request ID is outside that cap. Oversized results return `response_too_large`; request fewer outline entries or a smaller content budget.
-- **Resource limits:** four simultaneous tools, 45-second tool deadline, 20-second per-request deadline, 8 MiB upstream body limit, 1 MiB document/manifest limits, at most 1,000 heading sections per document. Network redirects, inherited proxies, and unsolicited compressed responses are refused. Only the fixed public registry/GitHub API hosts are fetched.
+- **Resource limits:** four simultaneous tools, 45-second tool deadline, 20-second per-request deadline, 8 MiB upstream body limit, 1 MiB document/manifest limits, at most 1,000 heading sections per document. Network redirects, inherited proxies, and unsolicited compressed responses are refused. Package tools fetch only the fixed public registry/GitHub API hosts; the separate official-source catalog permits only its exact reviewed URL.
 - **Cache limits:** 256 entries, 2 MiB per encoded value, 32 MiB total logical value bytes. Writes prune expired/oldest entries. These are logical quotas, not a byte-perfect SQLite-file/RSS guarantee; existing database pages can be reused without shrinking the file. Cache failure degrades to uncached retrieval, not false success.
 - **Trust:** fetched content is untrusted data, not agent instructions. Tool availability does not guarantee an agent uses it. This is a single-user local stdio service, not an authenticated multi-tenant network service.
 

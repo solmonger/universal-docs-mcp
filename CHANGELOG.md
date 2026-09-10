@@ -6,6 +6,7 @@
 - Validate outbound results before SDK handling; replace schema violations with a sanitized error.
 - Add schema/failure regressions and preserve text/structured output equality.
 - Keep the maintained SDK v1 runtime pending executed cross-version client evidence.
+- Add a fixed versioned MCP-tools source catalog and bounded Markdown fetcher, with no arbitrary-URL or latest alias and no change to the generic registry allowlist. This library path is not yet hooked into per-run delivery.
 
 ## 0.3.0rc2 — local review-repair candidate, not yet published
 

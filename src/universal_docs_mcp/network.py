@@ -8,6 +8,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from . import __version__
+from .source_catalog import source_for
 from .validation import InfoArgs, OutlineArgs
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -93,12 +94,25 @@ async def get_response(
         or parts.fragment
     ):
         raise ValueError("unsupported_upstream_url")
+    return await _get_allowed_response(url, headers=headers, max_bytes=max_bytes)
+
+
+async def get_catalog_response(source_id: str, version: str) -> httpx.Response:
+    """Fetch a fixed catalog path; this does not broaden the generic URL API."""
+    source = source_for(source_id, version)
+    return await _get_allowed_response(
+        source.retrieval_url, headers={"Accept": "text/markdown"}, max_bytes=1024 * 1024
+    )
+
+
+async def _get_allowed_response(url: str, *, headers: dict | None, max_bytes: int):
+    # Only policy-checked callers above reach this shared bounded transport.
     request_headers = {
         "User-Agent": f"universal-docs-mcp/{__version__}",
         **(headers or {}),
         "Accept-Encoding": "identity",
     }
-    if parts.hostname != "api.github.com" and any(
+    if urlsplit(url).hostname != "api.github.com" and any(
         k.lower() == "authorization" for k in request_headers
     ):
         raise ValueError("authorization_scope_violation")
