@@ -90,6 +90,27 @@ async def smoke(live: bool) -> dict:
                         )
                         return payload
 
+                    async def call_protocol_error(name, args, expected_code):
+                        try:
+                            await session.call_tool(name, args)
+                        except Exception as exc:
+                            error = getattr(exc, "error", None)
+                            code = getattr(error, "code", None)
+                            message = getattr(error, "message", None)
+                            assert code == expected_code
+                            assert message == "Invalid tool call"
+                            assert name not in str(exc)
+                            result["calls"].append(
+                                {
+                                    "tool": "unknown_tool",
+                                    "isError": True,
+                                    "protocolErrorCode": code,
+                                    "protocolErrorMessage": message,
+                                }
+                            )
+                            return
+                        raise AssertionError("unknown tool returned a tool result")
+
                     manifest = await call(
                         "get_project_dependencies", {"manifest_path": "package.json"}
                     )
@@ -101,7 +122,7 @@ async def smoke(live: bool) -> dict:
                         {"package": "demo", "version": "../private"},
                         "invalid_arguments",
                     )
-                    await call("missing_tool", {}, "unknown_tool")
+                    await call_protocol_error("SYNTHETIC_MISSING_TOOL", {}, -32602)
                     if live:
                         for package, ecosystem in [
                             ("requests", "python"),
@@ -173,6 +194,7 @@ async def smoke(live: bool) -> dict:
             stderr.seek(0)
             server_logs = stderr.read()
             assert "SYNTHETIC_SMOKE_CANARY" not in server_logs
+            assert "SYNTHETIC_MISSING_TOOL" not in server_logs
             assert "Traceback" not in server_logs
             result["server_stderr"] = server_logs
     result["finished_at"] = datetime.now(timezone.utc).isoformat()

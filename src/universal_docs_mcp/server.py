@@ -22,6 +22,7 @@ import httpx
 import mcp.server.stdio
 import mcp.types as types
 from mcp.server import Server
+from mcp.shared.exceptions import McpError
 from pydantic import ValidationError
 
 from . import __version__
@@ -151,6 +152,24 @@ async def mcp_call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolR
                 isError=True,
             )
     return result
+
+
+# The maintained v1 decorator maps ordinary handler exceptions to an
+# isError tool result. Unknown tools are request-shape errors instead, so gate
+# them before that SDK wrapper. Keep this message fixed: neither tool names nor
+# arguments belong in a protocol error or its logs.
+_sdk_call_tool_handler = server.request_handlers[types.CallToolRequest]
+
+
+async def _wire_call_tool_handler(request: types.CallToolRequest):
+    if request.params.name not in TOOL_ARGS:
+        raise McpError(
+            types.ErrorData(code=types.INVALID_PARAMS, message="Invalid tool call")
+        )
+    return await _sdk_call_tool_handler(request)
+
+
+server.request_handlers[types.CallToolRequest] = _wire_call_tool_handler
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:

@@ -77,6 +77,33 @@ async def test_unexpected_error_does_not_echo_exception(monkeypatch, caplog):
     assert "SYNTHETIC" not in caplog.text
 
 
+async def test_cancelled_call_releases_permit(monkeypatch):
+    import asyncio
+
+    server._limiters.clear()
+    monkeypatch.setattr(server, "MAX_CONCURRENT_TOOLS", 1)
+    entered = asyncio.Event()
+    never = asyncio.Event()
+
+    async def stalled(*args):
+        entered.set()
+        await never.wait()
+
+    monkeypatch.setattr(server, "_dispatch_tool", stalled)
+    task = asyncio.create_task(server.call_tool("cache_stats", {}))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    async def completed(*args):
+        return server._error("after_cancel")
+
+    monkeypatch.setattr(server, "_dispatch_tool", completed)
+    result = await asyncio.wait_for(server.call_tool("cache_stats", {}), timeout=1)
+    assert json.loads(result[0].text)["error"] == "after_cancel"
+
+
 async def test_tool_deadline_returns_safe_retryable_error(monkeypatch):
     import asyncio
 

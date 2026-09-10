@@ -6,8 +6,10 @@ import os
 import sys
 from datetime import timedelta
 
+import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.shared.exceptions import McpError
 
 
 async def test_real_stdio_manifest_errors_and_cache(tmp_path):
@@ -71,9 +73,15 @@ async def test_real_stdio_manifest_errors_and_cache(tmp_path):
                 assert invalid.isError is True
                 assert invalid.structuredContent["error"] == "invalid_arguments"
                 assert "SYNTHETIC_INVALID_TOKEN" not in invalid.model_dump_json()
-                unknown = await session.call_tool("SYNTHETIC_UNKNOWN_TOOL_TOKEN", {})
-                assert unknown.isError is True
-                assert unknown.structuredContent["error"] == "unknown_tool"
+                with pytest.raises(McpError) as unknown_error:
+                    await session.call_tool("SYNTHETIC_UNKNOWN_TOOL_TOKEN", {})
+                assert unknown_error.value.error.code == -32602
+                assert unknown_error.value.error.message == "Invalid tool call"
+                assert (
+                    "SYNTHETIC_UNKNOWN_TOOL_TOKEN"
+                    not in unknown_error.value.error.model_dump_json()
+                )
+                assert "SYNTHETIC_UNKNOWN_TOOL_TOKEN" not in str(unknown_error.value)
                 (tmp_path / "package.json").write_text(
                     json.dumps(
                         {
@@ -89,7 +97,6 @@ async def test_real_stdio_manifest_errors_and_cache(tmp_path):
                 assert malformed.isError is True
                 assert malformed.structuredContent["error"] == "manifest_error"
                 assert "SYNTHETIC" not in malformed.model_dump_json()
-                assert "SYNTHETIC" not in unknown.model_dump_json()
                 (tmp_path / "package.json").write_text(
                     json.dumps(
                         {"dependencies": {f"safe{i}": "1.2.3" for i in range(350)}}
@@ -109,7 +116,4 @@ async def test_real_stdio_manifest_errors_and_cache(tmp_path):
                 assert stats.structuredContent["total"] == 0
                 await asyncio.wait_for(session.send_ping(), timeout=5)
     assert "SYNTHETIC" not in log_path.read_text()
-    assert (
-        "WARNING:mcp.server.lowlevel.server:dependency_diagnostic_redacted"
-        in log_path.read_text()
-    )
+    assert "dependency_diagnostic_redacted" in log_path.read_text()
