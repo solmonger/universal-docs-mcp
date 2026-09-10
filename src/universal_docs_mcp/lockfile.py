@@ -31,9 +31,18 @@ from typing import Optional
 
 from packaging.requirements import InvalidRequirement, Requirement
 
+from .validation import InfoArgs
+
 _SEMVER = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
 MAX_MANIFEST_BYTES = 1024 * 1024
 _EXACT = re.compile(r"^={1,3}\s*(?P<ver>[A-Za-z0-9][A-Za-z0-9.+-]*)$")
+
+
+def _validate_name(name: str, ecosystem: str) -> None:
+    try:
+        InfoArgs(package=name, ecosystem=ecosystem)
+    except ValueError:
+        raise ValueError("invalid_dependency_name") from None
 
 
 @dataclass
@@ -49,6 +58,7 @@ class Pin:
     marker: Optional[str] = None
 
     def __post_init__(self):
+        _validate_name(self.name, self.ecosystem)
         # Omit whole non-version references, not just familiar token query keys.
         # URL paths, fragments, encoded userinfo and local paths can all be private.
         if (
@@ -168,6 +178,7 @@ def parse_cargo_toml(text: str, source: str) -> list[Pin]:
     pins = []
     for group in ("dependencies", "dev-dependencies"):
         for name, val in _mapping(data.get(group, {})).items():
+            _validate_name(name, "rust")
             registry_lookup = True
             if isinstance(val, str):
                 spec = val

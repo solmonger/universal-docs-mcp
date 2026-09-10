@@ -10,8 +10,10 @@ from universal_docs_mcp.docs_fetcher import FetchedDocument
 from universal_docs_mcp.registries import PackageInfo
 
 
+@pytest.mark.parametrize("initial_version", [None, "1.2.3"])
+@pytest.mark.parametrize("ecosystem", [None, "python", "pypi"])
 async def test_exact_cache_works_without_registry_and_marks_metadata(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, initial_version, ecosystem
 ):
     monkeypatch.setattr(server, "cache", DocsCache(tmp_path))
 
@@ -27,8 +29,15 @@ async def test_exact_cache_works_without_registry_and_marks_metadata(
 
     monkeypatch.setattr(server, "fetch_package", package)
     monkeypatch.setattr(server, "fetch_docs_content_with_provenance", docs)
-    args = {"package": "demo", "ecosystem": "python", "version": "1.2.3"}
-    first = json.loads((await server.call_tool("get_package_docs", args))[0].text)
+    args = {"package": "demo", "version": "1.2.3"}
+    if ecosystem:
+        args["ecosystem"] = ecosystem
+    initial_args = {key: value for key, value in args.items() if key != "version"}
+    if initial_version:
+        initial_args["version"] = initial_version
+    first = json.loads(
+        (await server.call_tool("get_package_docs", initial_args))[0].text
+    )
 
     async def offline(*a, **kw):
         raise httpx.ConnectError("SYNTHETIC_OFFLINE")
@@ -46,6 +55,41 @@ async def test_exact_cache_works_without_registry_and_marks_metadata(
         ].text
     )
     assert refreshed["error"] == "upstream_unavailable"
+
+
+async def test_raw_exact_cache_needs_no_preexisting_request_alias(
+    monkeypatch, tmp_path
+):
+    import time
+    from dataclasses import asdict
+
+    monkeypatch.setattr(server, "cache", DocsCache(tmp_path))
+    server.cache.set(
+        "docsraw-v4:python:demo:1.2.3",
+        {
+            "content": "# Usage\nCached body.",
+            "source": "pypi_description",
+            "source_url": "https://pypi.org/pypi/demo/1.2.3/json",
+            "fetched_at": time.time(),
+            "package_info": asdict(PackageInfo("demo", "python", "1.2.3", "")),
+        },
+    )
+
+    async def offline(*a, **kw):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr(server, "fetch_package", offline)
+    result = await server.mcp_call_tool(
+        "get_package_docs",
+        {
+            "package": "demo",
+            "ecosystem": "python",
+            "version": "1.2.3",
+        },
+    )
+    assert result.isError is False
+    assert result.structuredContent["cached"] is True
+    assert result.structuredContent["metadata_refreshed"] is False
 
 
 async def test_no_stable_release_does_not_fall_back_to_prerelease(

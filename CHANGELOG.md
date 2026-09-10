@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0rc2 — local review-repair candidate, not yet published
+
+- Replace raw dependency/SDK diagnostics with attributed, severity-preserving redacted events in the standalone process; keep structured tool errors and sanitized application failures visible.
+- Reject malformed URL/Git/path-like dependency identities and Cargo aliases before returning or storing `Pin` objects.
+- Reuse canonical exact raw cache entries before registry lookup; latest lookups establish exact aliases without extending source freshness.
+- Enforce the 128 KiB bound against the serialized MCP result, including text/structured duplication and escaping.
+- Add runtime compatibility upper bounds and real stdio regressions for name privacy, stderr reflection and oversized responses.
+
 ## 0.3.0rc1 — local release candidate, not yet published
 
 ### Security and reliability

@@ -66,13 +66,15 @@ async def test_execution_failure_sets_protocol_error(monkeypatch):
     assert result.structuredContent == json.loads(result.content[0].text)
 
 
-async def test_unexpected_error_does_not_echo_exception(monkeypatch):
+async def test_unexpected_error_does_not_echo_exception(monkeypatch, caplog):
     async def broken(*a):
         raise KeyError("SYNTHETIC_SECRET")
 
     monkeypatch.setattr(server, "_dispatch_tool", broken)
     result = await server.call_tool("get_package_info", {"package": "demo"})
     assert json.loads(result[0].text)["error"] == "internal_error"
+    assert "KeyError" in caplog.text
+    assert "SYNTHETIC" not in caplog.text
 
 
 async def test_tool_deadline_returns_safe_retryable_error(monkeypatch):
@@ -117,6 +119,23 @@ async def test_concurrency_backpressure_is_immediate(monkeypatch):
     finally:
         release.set()
         await asyncio.gather(*tasks)
+
+
+@pytest.mark.parametrize(
+    "body", ["x" * (100 * 1024), '"\\\n' * 18000], ids=["plain-large", "escape-heavy"]
+)
+async def test_cap_includes_serialized_text_and_structured_content(monkeypatch, body):
+    import mcp.types as types
+
+    async def large(*a):
+        return [types.TextContent(type="text", text=json.dumps({"content": body}))]
+
+    monkeypatch.setattr(server, "_dispatch_tool", large)
+    result = await server.mcp_call_tool("cache_stats", {})
+    assert len(result.model_dump_json(by_alias=True).encode("utf-8")) <= 128 * 1024
+    assert result.isError is True
+    assert result.structuredContent["error"] == "response_too_large"
+    assert result.structuredContent == json.loads(result.content[0].text)
 
 
 async def test_tool_payload_has_hard_size_limit(monkeypatch):

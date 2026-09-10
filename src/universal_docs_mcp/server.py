@@ -40,13 +40,35 @@ from .network import ResponseTooLarge, network_lifespan
 from .registries import PackageInfo, fetch_package
 from .validation import ALIASES, TOOL_ARGS
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class _SafeDiagnostics(logging.Filter):
+    """Retain dependency event attribution/severity, never raw client text."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != logger.name:
+            record.msg = "dependency_diagnostic_redacted"
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return True
+
+
+def _configure_logging() -> None:
+    # Only the standalone process owns logging. Importing the library does not
+    # reconfigure its host. Structured tool errors remain the failure contract.
+    handler = logging.StreamHandler()
+    handler.addFilter(_SafeDiagnostics())
+    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+
 
 server = Server("universal-docs", version=__version__)
 cache = DocsCache()
 TOOL_TIMEOUT = 45
 MAX_CONCURRENT_TOOLS = 4
+MAX_TOOL_RESULT_BYTES = 128 * 1024
 _limiters = weakref.WeakKeyDictionary()
 
 
@@ -101,9 +123,19 @@ async def mcp_call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolR
     # credential-bearing invalid input cannot leak through its error formatter.
     content = await call_tool(name, arguments)
     payload = json.loads(content[0].text)
-    return types.CallToolResult(
+    result = types.CallToolResult(
         content=content, structuredContent=payload, isError="error" in payload
     )
+    # Include both representations and their escaping, not only plain text.
+    if (
+        len(result.model_dump_json(by_alias=True).encode("utf-8"))
+        > MAX_TOOL_RESULT_BYTES
+    ):
+        content = _error("response_too_large")
+        return types.CallToolResult(
+            content=content, structuredContent=json.loads(content[0].text), isError=True
+        )
+    return result
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
@@ -123,7 +155,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
             result = await asyncio.wait_for(
                 _dispatch_tool(name, arguments), timeout=TOOL_TIMEOUT
             )
-        if sum(len(item.text.encode("utf-8")) for item in result) > 128 * 1024:
+        if (
+            sum(len(item.text.encode("utf-8")) for item in result)
+            > MAX_TOOL_RESULT_BYTES
+        ):
             return _error("response_too_large")
         return result
     except asyncio.TimeoutError:
@@ -226,9 +261,18 @@ async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
     requested = args.get("version")
     namespace = ALIASES.get(ecosystem, ecosystem) if ecosystem else "auto"
     request_key = f"docrequest-v4:{namespace}:{package}:{requested}"
-    record = (
-        cache.get(request_key) if requested and not args.get("force_refresh") else None
-    )
+    record = None
+    if requested and not args.get("force_refresh"):
+        keys = [request_key]
+        if namespace != "auto":
+            keys.append(f"docsraw-v4:{namespace}:{package}:{requested}")
+        for key in keys:
+            candidate = cache.get(key)
+            if _valid_doc_record(candidate) and isinstance(
+                candidate.get("package_info"), dict
+            ):
+                record = candidate
+                break
     if _valid_doc_record(record) and isinstance(record.get("package_info"), dict):
         info = PackageInfo(**record["package_info"])
         version = requested
@@ -268,8 +312,9 @@ async def _load_document(args: dict) -> tuple[Any, str, str, bool, dict] | None:
                 },
             }
             cache.set(cache_key, record)
-        if requested:
-            cache.set(request_key, record)
+        # Latest resolution also establishes an exact alias in the requested
+        # namespace. Auto must never guess an ecosystem from unrelated raw keys.
+        cache.set(f"docrequest-v4:{namespace}:{package}:{version}", record)
     content = record["content"]
     provenance = {
         key: record.get(key) for key in ("source", "source_url", "fetched_at")
@@ -490,6 +535,7 @@ async def amain():
 
 
 def main():
+    _configure_logging()
     asyncio.run(amain())
 
 
