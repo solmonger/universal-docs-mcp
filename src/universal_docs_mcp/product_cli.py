@@ -423,6 +423,7 @@ _INIT_ERROR_REASONS = {
     "output_parent_invalid",
     "conflicting_universal_docs_hook",
     "write_failed",
+    "recovery_failed",
     "init_invalid",
     "active_install_conflict",
     "install_state_invalid",
@@ -1507,6 +1508,7 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
         _atomic_write(state_path, state_raw)
         tombstone_path.unlink(missing_ok=True)
     except (OSError, RuntimeError, ValueError):
+        recovery_failed = False
         try:
             _restore_file(
                 adapter_path,
@@ -1529,9 +1531,15 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
             )
             for path in created_backups:
                 path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise ValueError("write_failed") from None
+        except (OSError, RuntimeError, ValueError):
+            recovery_failed = True
+            # A state file is the sole activation marker.  Best effort removal
+            # prevents a partially recovered install from claiming live files.
+            try:
+                state_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise ValueError("recovery_failed" if recovery_failed else "write_failed") from None
     return receipt, 0
 
 
