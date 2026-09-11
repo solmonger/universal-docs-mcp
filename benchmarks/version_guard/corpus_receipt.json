@@ -136,6 +136,10 @@
       }
     }
   ],
-  "corpus_sha256": "591a3966974cc4bf369a25bc9183996013963df1e82ddb130e2a7d898c6cb63e",
+  "class_counts": {
+    "general_coding_error": 1,
+    "wrong_version_api": 11
+  },
+  "corpus_sha256": "a6a1e74826fa2e859f26744288fe1207b9f47fcabcbac7fad01e5eb6e7e4a38a",
   "schema": "universal-docs.corpus-receipt/v1"
 }

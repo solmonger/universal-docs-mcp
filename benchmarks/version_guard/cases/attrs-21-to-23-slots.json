@@ -1,16 +1,18 @@
 {
-  "id": "attrs-21-to-23-slots",
+  "context_profile": "readme",
   "ecosystem": "python",
+  "evidence_note": "Synthetic local API stub for attrs version semantics; not live-package evidence.",
+  "evidence_type": "synthetic_stub",
+  "expected_failure_class": "wrong_version_api",
+  "id": "attrs-21-to-23-slots",
+  "oracle_file": "benchmarks/version_guard/oracles/attrs-21-to-23-slots.py",
   "package": "attrs",
   "target_version": "23.2.0",
-  "task": "Update class declaration to the attrs 23 contract.",
-  "workspace_fixture": "benchmarks/version_guard/fixtures/attrs-21-to-23-slots",
+  "task": "Update the attrs integration to the target contract without relying on unstated details.",
   "test_command": [
     "python3",
-    "oracle.py"
+    "-c",
+    "pass"
   ],
-  "context_profile": "readme",
-  "expected_failure_class": "wrong_version_api",
-  "evidence_type": "synthetic_stub",
-  "evidence_note": "Synthetic local API stub for attrs 21/23 class declaration semantics; not live-package evidence."
+  "workspace_fixture": "benchmarks/version_guard/fixtures/attrs-21-to-23-slots"
 }

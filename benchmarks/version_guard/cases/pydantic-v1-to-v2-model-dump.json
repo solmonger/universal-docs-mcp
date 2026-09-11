@@ -1,16 +1,18 @@
 {
-  "id": "pydantic-v1-to-v2-model-dump",
+  "context_profile": "readme",
   "ecosystem": "python",
+  "evidence_note": "Synthetic local API stub for pydantic version semantics; not live-package evidence.",
+  "evidence_type": "synthetic_stub",
+  "expected_failure_class": "wrong_version_api",
+  "id": "pydantic-v1-to-v2-model-dump",
+  "oracle_file": "benchmarks/version_guard/oracles/pydantic-v1-to-v2-model-dump.py",
   "package": "pydantic",
   "target_version": "2.6.1",
-  "task": "Migrate the model serialization call from the v1 contract to the v2 contract.",
-  "workspace_fixture": "benchmarks/version_guard/fixtures/pydantic-v1-to-v2-model-dump",
+  "task": "Update the pydantic integration to the target contract without relying on unstated details.",
   "test_command": [
     "python3",
-    "oracle.py"
+    "-c",
+    "pass"
   ],
-  "context_profile": "readme",
-  "expected_failure_class": "wrong_version_api",
-  "evidence_type": "synthetic_stub",
-  "evidence_note": "Synthetic local API stub for pydantic v1/v2 model serialization; not live-package evidence."
+  "workspace_fixture": "benchmarks/version_guard/fixtures/pydantic-v1-to-v2-model-dump"
 }

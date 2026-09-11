@@ -1,16 +1,18 @@
 {
-  "id": "stable-api-no-lift-control",
+  "context_profile": "readme",
   "ecosystem": "python",
+  "evidence_note": "Synthetic local API stub for packaging version semantics; not live-package evidence.",
+  "evidence_type": "synthetic_stub",
+  "expected_failure_class": "general_coding_error",
+  "id": "stable-api-no-lift-control",
+  "oracle_file": "benchmarks/version_guard/oracles/stable-api-no-lift-control.py",
   "package": "packaging",
   "target_version": "24.0",
-  "task": "Exercise a stable API with a general coding failure; version-specific documentation cannot lift this control.",
-  "workspace_fixture": "benchmarks/version_guard/fixtures/stable-api-no-lift-control",
+  "task": "Repair the off-by-one indexing bug in the stable API control; documentation must not supply the behavioral answer.",
   "test_command": [
     "python3",
-    "oracle.py"
+    "-c",
+    "pass"
   ],
-  "context_profile": "readme",
-  "expected_failure_class": "general_coding_error",
-  "evidence_type": "synthetic_stub",
-  "evidence_note": "Synthetic local API stub for No-lift control: stable Version API; not live-package evidence."
+  "workspace_fixture": "benchmarks/version_guard/fixtures/stable-api-no-lift-control"
 }
