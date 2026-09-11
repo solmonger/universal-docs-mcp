@@ -79,6 +79,8 @@ def test_identity_requires_console_scripts_and_distribution_owned_module(
 ) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    (bin_dir / "python").write_text("#!/bin/sh\n")
+    (bin_dir / "python").chmod(0o700)
     for name in (product_cli._HOOK_NAME, product_cli._PREFLIGHT_NAME):
         script = bin_dir / name
         script.write_text("#!/bin/sh\n")
@@ -105,7 +107,7 @@ def test_identity_requires_console_scripts_and_distribution_owned_module(
     elsewhere = tmp_path / "elsewhere.py"
     elsewhere.write_text("__version__ = 'test'\n")
     module.__file__ = str(elsewhere)
-    assert product_cli._doctor_installation()["reason"] == "identity_mismatch"
+    assert product_cli._doctor_installation()["reason"] == "module_not_distribution_owned"
 
 
 def test_identity_override_is_fixture_not_installed(
@@ -118,6 +120,197 @@ def test_identity_override_is_fixture_not_installed(
     assert result["status"] == "fail"
     assert result["reason"] == "fixture_override"
     assert result["owned"] is False
+
+
+def _identity_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    module_kind: str = "correct",
+    dist_kind: str = "correct",
+    module_version: str | None = None,
+    dist_version: str | None = None,
+) -> tuple[Path, Path, SimpleNamespace, SimpleNamespace]:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    executable = scripts / "python"
+    executable.write_text("#! /bin/sh\\n")
+    executable.chmod(0o700)
+    for name in (product_cli._HOOK_NAME, product_cli._PREFLIGHT_NAME):
+        path = scripts / name
+        path.write_text("#! /bin/sh\\n")
+        path.chmod(0o700)
+    module_path = tmp_path / "site" / "universal_docs_mcp" / "__init__.py"
+    module_path.parent.mkdir(parents=True)
+    module_path.write_text("__version__ = 'fixture'\\n")
+    if module_kind == "module-missing":
+        module_path.unlink()
+    elif module_kind == "module-symlink":
+        target = tmp_path / "target.py"
+        target.write_text("__version__ = 'fixture'\\n")
+        module_path.unlink()
+        module_path.symlink_to(target)
+    elif module_kind == "module-fifo":
+        module_path.unlink()
+        os.mkfifo(module_path)
+    elif module_kind == "module-directory":
+        module_path.unlink()
+        module_path.mkdir()
+    module = SimpleNamespace(
+        __file__=None if module_kind == "module-no-file" else str(module_path),
+        __version__=module_version or product_cli.__version__,
+    )
+    if dist_kind == "empty-files":
+        files = []
+    elif dist_kind == "module-absent":
+        files = [Path("other.py")]
+    elif dist_kind == "malformed":
+        files = [object()]
+    else:
+        files = [Path("universal_docs_mcp/__init__.py")]
+    def locate(item: object) -> Path:
+        if dist_kind == "malformed":
+            raise ValueError("bad entry")
+        return module_path if dist_kind != "module-absent" else tmp_path / "other.py"
+    dist = SimpleNamespace(
+        version=dist_version or product_cli.__version__, files=files, locate_file=locate
+    )
+    monkeypatch.setattr(product_cli.sys, "executable", str(executable))
+    monkeypatch.setattr(product_cli.importlib, "import_module", lambda name: module)
+    monkeypatch.setattr(product_cli.importlib.metadata, "distribution", lambda name: dist)
+    for name in (product_cli._HOOK_NAME, product_cli._PREFLIGHT_NAME):
+        monkeypatch.delenv("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper(), raising=False)
+    return scripts, module_path, module, dist
+
+
+@pytest.mark.parametrize("kind", ["missing", "symlink", "fifo", "directory", "non-executable", "outside"])
+@pytest.mark.parametrize("name", [product_cli._HOOK_NAME, product_cli._PREFLIGHT_NAME])
+def test_identity_checks_each_console_script_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, name: str
+) -> None:
+    scripts, _, _, _ = _identity_fixture(tmp_path, monkeypatch)
+    path = scripts / name
+    if kind == "missing":
+        path.unlink()
+    elif kind == "symlink":
+        path.unlink()
+        path.symlink_to(scripts / product_cli._PREFLIGHT_NAME)
+    elif kind == "fifo":
+        path.unlink()
+        os.mkfifo(path)
+    elif kind == "directory":
+        path.unlink()
+        path.mkdir()
+    elif kind == "non-executable":
+        path.chmod(0o600)
+    elif kind == "outside":
+        path.unlink()
+        outside = tmp_path / "outside-script"
+        outside.write_text("#! /bin/sh\\n")
+        outside.chmod(0o700)
+        active = tmp_path / "active"
+        active.mkdir()
+        active_python = active / "python"
+        active_python.write_text("#! /bin/sh\\n")
+        active_python.chmod(0o700)
+        for other in (product_cli._HOOK_NAME, product_cli._PREFLIGHT_NAME):
+            if other != name:
+                active_script = active / other
+                active_script.write_text("#! /bin/sh\\n")
+                active_script.chmod(0o700)
+        monkeypatch.setattr(product_cli.sys, "executable", str(active_python))
+    result = product_cli._doctor_installation()
+    assert result["status"] == "fail"
+    assert result["scripts"][name]["status"] == "fail"
+    assert result["scripts"][name]["provenance"] == "installed"
+    assert str(tmp_path) not in json.dumps(result)
+
+
+@pytest.mark.parametrize("kind,expected", [("missing", "active_interpreter_missing"), ("symlink", "active_interpreter_symlink"), ("fifo", "active_interpreter_not_regular"), ("directory", "active_interpreter_not_regular")])
+def test_identity_rejects_active_interpreter_topology_without_path_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, expected: str
+) -> None:
+    scripts, _, _, _ = _identity_fixture(tmp_path, monkeypatch)
+    executable = scripts / "python"
+    if kind == "missing":
+        executable.unlink()
+    elif kind == "symlink":
+        executable.unlink()
+        executable.symlink_to(scripts / product_cli._HOOK_NAME)
+    elif kind == "fifo":
+        executable.unlink()
+        os.mkfifo(executable)
+    else:
+        executable.unlink()
+        executable.mkdir()
+    result = product_cli._doctor_installation()
+    assert result["reason"] == expected and result["status"] == "fail"
+    assert str(tmp_path) not in json.dumps(result)
+
+
+@pytest.mark.parametrize("kind", ["module-no-file", "module-missing", "module-symlink", "module-fifo", "module-directory"])
+def test_identity_rejects_module_topology(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    _identity_fixture(tmp_path, monkeypatch, module_kind=kind)
+    result = product_cli._doctor_installation()
+    assert result["status"] == "fail" and result["owned"] is False
+    assert result["reason"].startswith("module_")
+
+
+@pytest.mark.parametrize("kind", ["import-failure", "distribution-missing"])
+def test_identity_rejects_unavailable_package_or_distribution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    _identity_fixture(tmp_path, monkeypatch)
+    if kind == "import-failure":
+        monkeypatch.setattr(product_cli.importlib, "import_module", lambda name: (_ for _ in ()).throw(ImportError("no package")))
+    else:
+        monkeypatch.setattr(product_cli.importlib.metadata, "distribution", lambda name: (_ for _ in ()).throw(product_cli.importlib.metadata.PackageNotFoundError(name)))
+    result = product_cli._doctor_installation()
+    assert result["status"] == "fail" and result["owned"] is False
+    assert result["reason"] in {"package_import_failed", "distribution_missing"}
+
+
+@pytest.mark.parametrize("kind", ["empty-files", "module-absent", "malformed"])
+def test_identity_rejects_distribution_file_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    _identity_fixture(tmp_path, monkeypatch, dist_kind=kind)
+    result = product_cli._doctor_installation()
+    assert result["status"] == "fail" and result["owned"] is False
+    assert result["reason"].startswith("distribution_") or result["reason"] == "module_not_distribution_owned"
+
+
+@pytest.mark.parametrize("module_version,dist_version,expected", [("0.4.0rc2", "0.4.0rc3", "distribution_module_version_mismatch"), ("0.4.0rc3", "0.4.0rc2", "distribution_module_version_mismatch"), ("0.4.0rc3", "0.4.0rc3", "package_module_version_mismatch"), ("0.4.0rc2", "0.4.0rc2", "identity_match")])
+def test_identity_versions_are_directional_and_exact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_version: str, dist_version: str, expected: str) -> None:
+    _identity_fixture(tmp_path, monkeypatch, module_version=module_version, dist_version=dist_version)
+    result = product_cli._doctor_installation()
+    assert result["reason"] == expected
+    assert result["status"] == ("pass" if expected == "identity_match" else "fail")
+
+
+def test_identity_override_is_fixture_provenance_even_when_scripts_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _identity_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_COMMAND_HOOK", str(tmp_path / "hook"))
+    result = product_cli._doctor_installation()
+    assert result["status"] == "fail" and result["reason"] == "fixture_override"
+    assert result["provenance"] == "fixture"
+    assert all(item["owned"] is False for item in result["scripts"].values())
+    assert str(tmp_path) not in json.dumps(result)
+
+
+def test_doctor_receipt_identity_metadata_is_bounded_and_path_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _init_project(tmp_path, monkeypatch)
+    rc, receipt = _receipt(root, "doctor")
+    assert rc == 1
+    encoded = json.dumps(receipt)
+    assert len(encoded.encode()) <= product_cli.MAX_OUTPUT_BYTES
+    assert str(tmp_path) not in encoded
+    identity = next(check for check in receipt["checks"] if check["id"] == "installed_identity")
+    assert identity["metadata"]["executable_identity"] in {None, "python"}
+    executables = next(check for check in receipt["checks"] if check["id"] == "executables")
+    assert executables["metadata"]["provenance"] == "fixture"
 
 
 def test_executable_validation_rejects_link_fifo_directory_and_non_executable(

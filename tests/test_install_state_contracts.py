@@ -111,7 +111,7 @@ def test_doctor_requires_state_and_uses_absolute_rollback_root(tmp_path, monkeyp
     state_check = next(item for item in receipt["checks"] if item["id"] == "install_state")
     assert state_check["status"] == "pass"
     assert "ABSOLUTE" not in receipt["rollback"]["command"]
-    assert str(root) in receipt["rollback"]["command"]
+    assert receipt["rollback"]["command"] == "universal-docs rollback --project-root '<project-root>' --apply"
 
 
 def test_state_last_failure_leaves_no_active_install(tmp_path, monkeypatch):

@@ -76,55 +76,122 @@ def _doctor_read_json(
 
 
 def _doctor_installation() -> dict[str, Any]:
-    """Prove the ordinary install is the one used by this interpreter.
-
-    Fixture executable overrides are deliberately never classified as an installed
-    identity; they are test seams, not ownership evidence.
-    """
-    override = any(
-        os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper())
-        for name in (_HOOK_NAME, _PREFLIGHT_NAME)
-    )
-    executable = Path(sys.executable).resolve()
-    result = {
+    """Prove that the ordinary install belongs to this interpreter and distribution."""
+    names = (_HOOK_NAME, _PREFLIGHT_NAME)
+    overrides = {
+        name: bool(os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper()))
+        for name in names
+    }
+    override = any(overrides.values())
+    raw_executable = Path(sys.executable) if isinstance(sys.executable, str) else Path("")
+    result: dict[str, Any] = {
         "status": "fail",
         "reason": "fixture_override" if override else "installed_identity_unavailable",
         "module_path": None,
         "installed_version": None,
-        "executable": str(executable),
+        # Only receipt-safe identities leave this function; never expose a home path.
+        "executable": raw_executable.name or None,
         "owned": False,
+        "provenance": "fixture" if override else "installed",
+        "scripts": {},
     }
+
     if override:
+        result["scripts"] = {
+            name: {"status": "fail", "reason": "fixture_override", "owned": False,
+                   "provenance": "fixture"}
+            for name in names
+        }
+        return result
+
+    if not raw_executable.is_absolute():
+        result["reason"] = "active_interpreter_invalid"
         return result
     try:
-        expected_scripts = [executable.parent / name for name in (_HOOK_NAME, _PREFLIGHT_NAME)]
-        for script in expected_scripts:
+        executable_info = raw_executable.lstat()
+    except (OSError, ValueError):
+        result["reason"] = "active_interpreter_missing"
+        return result
+    if raw_executable.is_symlink():
+        result["reason"] = "active_interpreter_symlink"
+        return result
+    if not stat.S_ISREG(executable_info.st_mode):
+        result["reason"] = "active_interpreter_not_regular"
+        return result
+    scripts_dir = raw_executable.parent
+    for name in names:
+        script = scripts_dir / name
+        try:
             _validate_executable(script)
+        except ValueError as exc:
+            result["scripts"][name] = {
+                "status": "fail", "reason": str(exc), "owned": False,
+                "provenance": "installed",
+            }
+            result["reason"] = "console_script_invalid"
+            return result
+        result["scripts"][name] = {
+            "status": "pass", "reason": "ordinary_installation", "owned": True,
+            "provenance": "installed",
+        }
+
+    try:
         module = importlib.import_module("universal_docs_mcp")
-        raw_module_path = getattr(module, "__file__", None)
-        if not isinstance(raw_module_path, str):
-            return result
-        module_path = Path(raw_module_path).resolve()
-        if not module_path.is_file() or module_path.is_symlink():
-            return result
+    except (ImportError, OSError, TypeError, ValueError):
+        result["reason"] = "package_import_failed"
+        return result
+    raw_module_path = getattr(module, "__file__", None)
+    if not isinstance(raw_module_path, str):
+        result["reason"] = "module_file_missing"
+        return result
+    module_path = Path(raw_module_path)
+    try:
+        module_info = module_path.lstat()
+    except (OSError, ValueError):
+        result["reason"] = "module_file_missing"
+        return result
+    if stat.S_ISLNK(module_info.st_mode):
+        result["reason"] = "module_file_symlink"
+        return result
+    if not stat.S_ISREG(module_info.st_mode):
+        result["reason"] = "module_file_not_regular"
+        return result
+    if not module_path.is_file():
+        result["reason"] = "module_file_missing"
+        return result
+
+    try:
         distribution = importlib.metadata.distribution("universal-docs-mcp")
         version = distribution.version
         files = distribution.files
         if not files:
+            result["reason"] = "distribution_files_missing"
             return result
         owned_files = {
             Path(str(distribution.locate_file(item))).resolve() for item in files
         }
-        owned = module_path in owned_files
-        result.update(
-            module_path=str(module_path), installed_version=version, owned=owned
-        )
-        ok = owned and version == getattr(module, "__version__", None) == __version__
-        result["status"] = "pass" if ok else "fail"
-        result["reason"] = "identity_match" if ok else "identity_mismatch"
+    except importlib.metadata.PackageNotFoundError:
+        result["reason"] = "distribution_missing"
         return result
-    except (ImportError, importlib.metadata.PackageNotFoundError, OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError, RuntimeError, AttributeError):
+        result["reason"] = "distribution_files_invalid"
         return result
+
+    owned = module_path.resolve() in owned_files
+    module_version = getattr(module, "__version__", None)
+    result["installed_version"] = version if isinstance(version, str) else None
+    result["module_path"] = module_path.name
+    result["owned"] = owned
+    if not owned:
+        result["reason"] = "module_not_distribution_owned"
+    elif version != module_version:
+        result["reason"] = "distribution_module_version_mismatch"
+    elif module_version != __version__:
+        result["reason"] = "package_module_version_mismatch"
+    else:
+        result["status"] = "pass"
+        result["reason"] = "identity_match"
+    return result
 
 
 def _doctor_probe(
@@ -1036,8 +1103,8 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
                 if executable_ok
                 else "executable_invalid"
             ),
-            hook=str(hook),
-            preflight=str(preflight),
+            hook=Path(hook).name,
+            preflight=Path(preflight).name,
             provenance="fixture" if override_used else "installed",
         )
     )
@@ -1137,7 +1204,7 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
         )
     )
     status = "pass" if all(c["status"] == "pass" for c in checks) else "fail"
-    command = ["universal-docs", "rollback", "--project-root", str(root), "--apply"]
+    command = ["universal-docs", "rollback", "--project-root", "<project-root>", "--apply"]
     receipt = {
         "schema": _DOCTOR_SCHEMA,
         "status": status,
