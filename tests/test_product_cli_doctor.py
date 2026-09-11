@@ -20,8 +20,13 @@ def response(package="demo", version="1.0.1"):
 
 def fixture(tmp_path: Path, monkeypatch, *, package="demo", version="1.0.1") -> Path:
     root = tmp_path / "project"
+    (root / "before").mkdir(parents=True)
+    (root / "after").mkdir()
+    (root / "before/requirements.txt").write_text("demo==1.0.0\n")
+    (root / "after/requirements.txt").write_text(f"{package}=={version}\n")
     (root / ".universal-docs" / "cache").mkdir(parents=True)
     (root / ".claude").mkdir()
+    (root / ".claude/settings.json").write_text(json.dumps({"unrelated": {"keep": True}}))
     answer = tmp_path / "answer.json"
     answer.write_text(json.dumps(response(package, version)))
     preflight = tmp_path / "preflight"
@@ -33,10 +38,8 @@ def fixture(tmp_path: Path, monkeypatch, *, package="demo", version="1.0.1") -> 
     monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_COMMAND_HOOK", str(hook))
     monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_PREFLIGHT", str(preflight))
     monkeypatch.setenv("UNIVERSAL_DOCS_CACHE_DIR", str(root / ".universal-docs" / "cache"))
-    adapter = {"preflight_command": [str(preflight)], "request": {"package": package, "ecosystem": "python", "selection": "requested", "requested_version": version, "section_ids": [], "context_max_bytes": 4096, "freshness_mode": "require_check", "deadline_ms": 30000}, "timeout_ms": 30000}
-    (root / ".universal-docs/adapter.json").write_text(json.dumps(adapter))
-    command = product_cli._hook_command(hook, root / ".universal-docs/adapter.json")
-    (root / ".claude/settings.json").write_text(json.dumps({"unrelated": {"keep": True}, "hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": command, "timeout": 30}]}]}}))
+    out = io.BytesIO()
+    assert product_cli.main(["init", "--harness", "claude-code", "--project-root", str(root), "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply"], stdout=out) == 0
     return root
 
 
@@ -75,6 +78,7 @@ def test_init_then_doctor_consumes_real_state(tmp_path, monkeypatch):
     out = io.BytesIO()
     assert product_cli.main(["init", "--harness", "claude-code", "--project-root", str(root), "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply"], stdout=out) == 0
     monkeypatch.setenv("UNIVERSAL_DOCS_CACHE_DIR", str(root / ".universal-docs" / "cache"))
+    (root / ".universal-docs" / "cache").mkdir(parents=True)
     monkeypatch.setattr(product_cli, "_doctor_installation", lambda: {"status": "pass", "reason": "identity_match", "module_path": "/installed/universal_docs_mcp/__init__.py", "installed_version": "0.4.0rc2", "executable": "/installed/bin/python"})
     rc, receipt = call(root)
     assert rc == 0
