@@ -40,64 +40,91 @@ def _doctor_check(
 def _doctor_read_json(
     path: Path, reason: str
 ) -> tuple[dict[str, Any] | None, bytes | None, str | None]:
+    """Read one bounded regular JSON file without a symlink race."""
     try:
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             return None, None, reason + "_not_regular"
-        with path.open("rb") as stream:
-            raw = stream.read(_DOCTOR_MAX_FILE_BYTES + 1)
-        if len(raw) > _DOCTOR_MAX_FILE_BYTES:
-            return None, None, reason + "_too_large"
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+            if stat.S_ISLNK(opened.st_mode) or not stat.S_ISREG(opened.st_mode):
+                return None, None, reason + "_not_regular"
+            raw = bytearray()
+            while len(raw) <= _DOCTOR_MAX_FILE_BYTES:
+                chunk = os.read(fd, min(16 * 1024, _DOCTOR_MAX_FILE_BYTES + 1 - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+            if len(raw) > _DOCTOR_MAX_FILE_BYTES:
+                return None, None, reason + "_too_large"
+        finally:
+            os.close(fd)
         value = json.loads(
-            raw.decode("utf-8"),
+            bytes(raw).decode("utf-8"),
             object_pairs_hook=_pairs_no_duplicates,
             parse_constant=_reject_json_constant,
         )
         if not isinstance(value, dict):
-            return None, raw, reason + "_invalid"
-        return value, raw, None
+            return None, bytes(raw), reason + "_invalid"
+        return value, bytes(raw), None
     except FileNotFoundError:
         return None, None, reason + "_missing"
-    except (
-        OSError,
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-        TypeError,
-        ValueError,
-        RecursionError,
-    ):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None, None, reason + "_invalid"
 
 
 def _doctor_installation() -> dict[str, Any]:
+    """Prove the ordinary install is the one used by this interpreter.
+
+    Fixture executable overrides are deliberately never classified as an installed
+    identity; they are test seams, not ownership evidence.
+    """
+    override = any(
+        os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper())
+        for name in (_HOOK_NAME, _PREFLIGHT_NAME)
+    )
+    executable = Path(sys.executable).resolve()
+    result = {
+        "status": "fail",
+        "reason": "fixture_override" if override else "installed_identity_unavailable",
+        "module_path": None,
+        "installed_version": None,
+        "executable": str(executable),
+        "owned": False,
+    }
+    if override:
+        return result
     try:
+        expected_scripts = [executable.parent / name for name in (_HOOK_NAME, _PREFLIGHT_NAME)]
+        for script in expected_scripts:
+            _validate_executable(script)
         module = importlib.import_module("universal_docs_mcp")
-        module_path = str(Path(module.__file__).resolve())
+        raw_module_path = getattr(module, "__file__", None)
+        if not isinstance(raw_module_path, str):
+            return result
+        module_path = Path(raw_module_path).resolve()
+        if not module_path.is_file() or module_path.is_symlink():
+            return result
         distribution = importlib.metadata.distribution("universal-docs-mcp")
         version = distribution.version
-        files = distribution.files or []
-        roots = [Path(distribution.locate_file(item)).resolve() for item in files]
-        owned = any(
-            Path(module_path) == root or Path(module_path).is_relative_to(root)
-            for root in roots
+        files = distribution.files
+        if not files:
+            return result
+        owned_files = {
+            Path(str(distribution.locate_file(item))).resolve() for item in files
+        }
+        owned = module_path in owned_files
+        result.update(
+            module_path=str(module_path), installed_version=version, owned=owned
         )
         ok = owned and version == getattr(module, "__version__", None) == __version__
-        return {
-            "status": "pass" if ok else "fail",
-            "reason": "identity_match" if ok else "identity_mismatch",
-            "module_path": module_path,
-            "installed_version": version,
-            "executable": str(Path(sys.executable).resolve()),
-            "owned": owned,
-        }
-    except (ImportError, importlib.metadata.PackageNotFoundError, OSError, TypeError):
-        return {
-            "status": "fail",
-            "reason": "installed_identity_unavailable",
-            "module_path": None,
-            "installed_version": None,
-            "executable": str(Path(sys.executable).resolve()),
-        }
+        result["status"] = "pass" if ok else "fail"
+        result["reason"] = "identity_match" if ok else "identity_mismatch"
+        return result
+    except (ImportError, importlib.metadata.PackageNotFoundError, OSError, TypeError, ValueError):
+        return result
 
 
 def _doctor_probe(
@@ -442,7 +469,7 @@ _MAX_INIT_FILE_BYTES = 64 * 1024
 def _read_existing(
     path: Path, *, missing: bytes | None = None, reason: str
 ) -> bytes | None:
-    """Read a bounded regular file without following symlinks."""
+    """Read a bounded regular file without following a final symlink or race."""
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -451,14 +478,38 @@ def _read_existing(
         raise ValueError(reason) from None
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         raise ValueError(reason)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(_MAX_INIT_FILE_BYTES + 1)
+        fd = os.open(path, flags)
     except OSError:
         raise ValueError(reason) from None
-    if len(raw) > _MAX_INIT_FILE_BYTES:
-        raise ValueError(reason)
-    return raw
+    try:
+        opened = os.fstat(fd)
+        if stat.S_ISLNK(opened.st_mode) or not stat.S_ISREG(opened.st_mode):
+            raise ValueError(reason)
+        chunks: list[bytes] = []
+        total = 0
+        while total <= _MAX_INIT_FILE_BYTES:
+            chunk = os.read(fd, min(16 * 1024, _MAX_INIT_FILE_BYTES + 1 - total))
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > _MAX_INIT_FILE_BYTES:
+                raise ValueError(reason)
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError(reason) from None
+    finally:
+        os.close(fd)
+    raise AssertionError("unreachable")
+
+
+def _validate_project_topology(root: Path) -> None:
+    """Reject project control directories redirected through links or special files."""
+    for relative in (Path(".universal-docs/adapter.json"), Path(".universal-docs/install-state.json"), Path(".universal-docs/rollback-tombstone.json"), Path(".claude/settings.json")):
+        _validate_output_parent(root, root / relative)
 
 
 def _parse_settings(raw: bytes) -> dict[str, Any]:
@@ -646,7 +697,10 @@ def _relative_state_path(
     if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
         raise ValueError(reason)
     candidate = root / path
-    _validate_output_parent(root, candidate)
+    try:
+        _validate_output_parent(root, candidate)
+    except ValueError:
+        raise ValueError(reason) from None
     return path
 
 
@@ -854,6 +908,7 @@ def _doctor_cache(root: Path) -> tuple[dict[str, Any], str]:
 
 
 def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
+    _validate_project_topology(root)
     checks: list[dict[str, Any]] = []
     identity = _doctor_installation()
     checks.append(
@@ -931,14 +986,12 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
     )
     hook = _installation_executable(_HOOK_NAME)
     preflight = _installation_executable(_PREFLIGHT_NAME)
-    executable_ok = all(
-        path.is_absolute()
-        and path.exists()
-        and path.is_file()
-        and not path.is_symlink()
-        and os.access(path, os.X_OK)
-        for path in (hook, preflight)
-    )
+    try:
+        _validate_executable(hook)
+        _validate_executable(preflight)
+        executable_ok = True
+    except ValueError:
+        executable_ok = False
     override_used = any(
         os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper())
         for name in (_HOOK_NAME, _PREFLIGHT_NAME)
@@ -1270,6 +1323,7 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
 
 
 def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
+    _validate_project_topology(root)
     state, state_raw = _read_state(root)
     adapter_path, settings_path, state_path = (
         root / ".universal-docs/adapter.json",
@@ -1329,10 +1383,13 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
         raise ValueError("rollback_settings_invalid")
     hook = _validate_executable(_installation_executable(_HOOK_NAME))
     command = _hook_command(hook, adapter_path)
+    argv = [str(hook), "--harness", "claude", "--config", str(adapter_path)]
     if (
         adapter_raw is None
         or _sha256(adapter_raw) != state["adapter"]["sha256"]
         or _sha256(command.encode()) != state["hook"]["command_sha256"]
+        or _sha256(json.dumps(argv, separators=(",", ":")).encode())
+        != state["hook"]["argv_sha256"]
     ):
         raise ValueError("rollback_live_mismatch")
     event = (
