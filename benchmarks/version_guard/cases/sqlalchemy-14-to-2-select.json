@@ -1,0 +1,16 @@
+{
+  "id": "sqlalchemy-14-to-2-select",
+  "ecosystem": "python",
+  "package": "sqlalchemy",
+  "target_version": "2.0.29",
+  "task": "Migrate query construction from the 1.4 query API to the 2.x select API.",
+  "workspace_fixture": "benchmarks/version_guard/fixtures/sqlalchemy-14-to-2-select",
+  "test_command": [
+    "python3",
+    "oracle.py"
+  ],
+  "context_profile": "readme",
+  "expected_failure_class": "wrong_version_api",
+  "evidence_type": "synthetic_stub",
+  "evidence_note": "Synthetic local API stub for SQLAlchemy 1.4/2.x select semantics; not live-package evidence."
+}

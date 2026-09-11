@@ -1,0 +1,16 @@
+{
+  "id": "attrs-21-to-23-slots",
+  "ecosystem": "python",
+  "package": "attrs",
+  "target_version": "23.2.0",
+  "task": "Update class declaration to the attrs 23 contract.",
+  "workspace_fixture": "benchmarks/version_guard/fixtures/attrs-21-to-23-slots",
+  "test_command": [
+    "python3",
+    "oracle.py"
+  ],
+  "context_profile": "readme",
+  "expected_failure_class": "wrong_version_api",
+  "evidence_type": "synthetic_stub",
+  "evidence_note": "Synthetic local API stub for attrs 21/23 class declaration semantics; not live-package evidence."
+}

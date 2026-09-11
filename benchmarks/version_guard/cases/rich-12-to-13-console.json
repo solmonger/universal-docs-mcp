@@ -1,0 +1,16 @@
+{
+  "id": "rich-12-to-13-console",
+  "ecosystem": "python",
+  "package": "rich",
+  "target_version": "13.7.1",
+  "task": "Update console construction to the Rich 13 contract.",
+  "workspace_fixture": "benchmarks/version_guard/fixtures/rich-12-to-13-console",
+  "test_command": [
+    "python3",
+    "oracle.py"
+  ],
+  "context_profile": "readme",
+  "expected_failure_class": "wrong_version_api",
+  "evidence_type": "synthetic_stub",
+  "evidence_note": "Synthetic local API stub for Rich 12/13 console semantics; not live-package evidence."
+}

@@ -1,0 +1,16 @@
+{
+  "id": "pydantic-v1-to-v2-validator",
+  "ecosystem": "python",
+  "package": "pydantic",
+  "target_version": "2.6.1",
+  "task": "Migrate validator declaration from the v1 decorator to the v2 decorator.",
+  "workspace_fixture": "benchmarks/version_guard/fixtures/pydantic-v1-to-v2-validator",
+  "test_command": [
+    "python3",
+    "oracle.py"
+  ],
+  "context_profile": "readme",
+  "expected_failure_class": "wrong_version_api",
+  "evidence_type": "synthetic_stub",
+  "evidence_note": "Synthetic local API stub for pydantic v1/v2 validators; not live-package evidence."
+}

@@ -1,0 +1,16 @@
+{
+  "id": "urllib3-1-to-2-timeout",
+  "ecosystem": "python",
+  "package": "urllib3",
+  "target_version": "2.2.1",
+  "task": "Update timeout construction to the urllib3 2 contract.",
+  "workspace_fixture": "benchmarks/version_guard/fixtures/urllib3-1-to-2-timeout",
+  "test_command": [
+    "python3",
+    "oracle.py"
+  ],
+  "context_profile": "readme",
+  "expected_failure_class": "wrong_version_api",
+  "evidence_type": "synthetic_stub",
+  "evidence_note": "Synthetic local API stub for urllib3 1/2 timeout semantics; not live-package evidence."
+}
