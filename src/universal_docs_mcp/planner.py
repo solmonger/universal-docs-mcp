@@ -17,6 +17,10 @@ from .preflight import PreflightRequest
 
 PLAN_SCHEMA = "universal-docs.plan/v1"
 _QUERY = "migration upgrade breaking changes quick start"
+_MAX_SOURCE_FILES = 8
+_MAX_ALIAS_ENTRIES = 24
+_MAX_ALIAS_ENTRY_LENGTH = 128
+_MAX_TASK_RAW_LENGTH = 4096
 
 
 def canonicalize_python_name(name: str) -> str:
@@ -202,6 +206,12 @@ def _select(
 
 
 def _read_source_scoped(root: Path, relative: Path) -> bytes:
+    if (
+        os.open not in os.supports_dir_fd
+        or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+    ):
+        raise OSError("descriptor_relative_traversal_unavailable")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     directory_flags = flags | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     root_fd = os.open(root, directory_flags)
@@ -250,6 +260,37 @@ def _attribute_root(node: ast.AST) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _bounded_source_paths(
+    source_paths: Iterable[str | Path],
+) -> tuple[str | Path, ...] | None:
+    """Consume no more than nine caller items before enforcing the eight-file cap."""
+    try:
+        iterator = iter(source_paths)
+        paths: list[str | Path] = []
+        for _ in range(_MAX_SOURCE_FILES + 1):
+            try:
+                paths.append(next(iterator))
+            except StopIteration:
+                break
+    except Exception:
+        return None
+    return tuple(paths)
+
+
+def _normalize_task(task: object) -> str | None:
+    if not isinstance(task, str) or len(task) > _MAX_TASK_RAW_LENGTH:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in task):
+        return None
+    normalized = " ".join(task.split())
+    try:
+        if not normalized or len(normalized.encode("utf-8")) > 512:
+            return None
+    except UnicodeEncodeError:
+        return None
+    return normalized
+
+
 def _source_signal(
     package: str,
     version: str,
@@ -257,15 +298,16 @@ def _source_signal(
     source_paths: Iterable[str | Path],
     root: Path,
 ) -> tuple[str, dict[str, Any]] | str:
-    paths = tuple(source_paths)
+    paths = (
+        source_paths
+        if isinstance(source_paths, tuple)
+        else _bounded_source_paths(source_paths)
+    )
+    if paths is None:
+        return "task_signal_invalid"
     if task is not None:
-        task = " ".join(task.split())
-        if (
-            not task
-            or "\x00" in task
-            or any(ord(c) < 32 for c in task)
-            or len(task.encode()) > 512
-        ):
+        task = _normalize_task(task)
+        if task is None:
             return "task_signal_invalid"
     if task is not None and not paths:
         return "task_signal_source_required"
@@ -276,6 +318,7 @@ def _source_signal(
     import_name = package.replace("-", "_")
     aliases: dict[str, str] = {}
     imported_names: set[str] = set()
+    symbols: set[str] = set()
     trees: list[ast.AST] = []
     total = 0
     tracked: set[str] = set()
@@ -408,23 +451,18 @@ def _source_signal(
                 while isinstance(func, ast.Attribute):
                     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", func.attr):
                         # Attributes and the called name are both useful terms.
-                        tracked_term = func.attr
-                        aliases.setdefault("__symbols__", "")
-                        aliases["__symbols__"] += " " + tracked_term
+                        symbols.add(func.attr)
                     func = func.value
                 if isinstance(node.func, ast.Name):
-                    aliases.setdefault("__symbols__", "")
-                    aliases["__symbols__"] += " " + node.func.id
+                    symbols.add(node.func.id)
                 for keyword in node.keywords:
                     if keyword.arg and re.fullmatch(
                         r"[A-Za-z_][A-Za-z0-9_]{0,63}", keyword.arg
                     ):
-                        aliases.setdefault("__symbols__", "")
-                        aliases["__symbols__"] += " " + keyword.arg
-    symbol_text = aliases.pop("__symbols__", "")
-    symbols = set(symbol_text.split()) | {
+                        symbols.add(keyword.arg)
+    symbols.update(
         v.rsplit(".", 1)[-1] for v in aliases.values() if v and v != import_name
-    }
+    )
     if not aliases:
         return "task_signal_not_found"
     selected = sorted(
@@ -446,17 +484,24 @@ def _source_signal(
     for term in selected:
         if len(query) + 1 + len(term) <= 512:
             query += " " + term
+    task_contributed = False
     if task:
         for term in task.split():
             if len(query) + 1 + len(term) > 512:
                 break
             query += " " + term
+            task_contributed = True
+    bounded_aliases = [
+        f"{key}->{value}"
+        for key, value in sorted(aliases.items())
+        if key != import_name and len(f"{key}->{value}") <= _MAX_ALIAS_ENTRY_LENGTH
+    ][:_MAX_ALIAS_ENTRIES]
     return query, {
         "mode": "source_backed",
         "source_files_inspected": len(paths),
         "symbols": selected,
-        "aliases": sorted(f"{k}->{v}" for k, v in aliases.items() if k != import_name),
-        "task_contributed": bool(task),
+        "aliases": bounded_aliases,
+        "task_contributed": task_contributed,
     }
 
 
@@ -502,16 +547,18 @@ def plan_dependency_changes(
             ),
             _abstain("dependency_unchanged", package=None, source=source),
         )
-    source_paths = tuple(source_paths)
     if task is None and not source_paths:
         return selected
     if selected.status != "selected":
         return selected
+    bounded_paths = _bounded_source_paths(source_paths)
+    if bounded_paths is None:
+        return _abstain("task_signal_invalid", package=selected.package, source=source)
     signal = _source_signal(
         selected.package or package or "",
         selected.target_version or "",
         task,
-        source_paths,
+        bounded_paths,
         project_root,
     )
     if isinstance(signal, str):

@@ -530,6 +530,108 @@ def test_checker_addendum_cli_rejects_duplicate_task_but_repeats_source(tmp_path
     assert code == 0
 
 
+def test_source_paths_are_bounded_before_iteration(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    seen = []
+
+    def paths():
+        for index in range(100):
+            seen.append(index)
+            if index == 9:
+                raise AssertionError("unbounded source path consumption")
+            yield "app.py"
+
+    plan = plan_dependency_changes(
+        before,
+        after,
+        project_root=tmp_path,
+        task="x",
+        source_paths=paths(),
+    )
+    assert plan.reason == "task_signal_invalid"
+    assert seen == list(range(9))
+
+
+def test_source_provenance_is_bounded_and_does_not_emit_raw_paths(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    imports = "\n".join(
+        f"from rich.{('m' + str(i))} import Thing{i}" for i in range(40)
+    )
+    (tmp_path / "app.py").write_text(imports + "\n")
+    plan = plan_dependency_changes(
+        before,
+        after,
+        project_root=tmp_path,
+        task="x",
+        source_paths=("app.py",),
+    )
+    selection = plan.as_dict()["selection"]
+    assert len(selection["aliases"]) <= 24
+    assert all(len(alias) <= 128 for alias in selection["aliases"])
+    assert len(json.dumps(plan.as_dict()).encode()) < 16 * 1024
+    assert str(tmp_path) not in json.dumps(plan.as_dict())
+
+
+def test_task_contributed_only_when_a_task_term_enters_query(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "app.py").write_text("from rich.console import Console\nConsole()\n")
+    too_long = "x" * 450
+    no_room = plan_dependency_changes(
+        before, after, project_root=tmp_path, task=too_long, source_paths=("app.py",)
+    )
+    assert no_room.as_dict()["selection"]["task_contributed"] is False
+    room = plan_dependency_changes(
+        before, after, project_root=tmp_path, task="console", source_paths=("app.py",)
+    )
+    assert room.as_dict()["selection"]["task_contributed"] is True
+
+
+@pytest.mark.parametrize("task", [123, "x\x00y", "x\x1fy", "x\x7fy", " " * 5000])
+def test_invalid_task_values_fail_closed(tmp_path, task):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    assert (
+        plan_dependency_changes(
+            before, after, project_root=tmp_path, task=task, source_paths=()
+        ).reason
+        == "task_signal_invalid"
+    )
+
+
+def test_descriptor_capability_failure_abstains(monkeypatch, tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "app.py").write_text("import rich\nrich.print()\n")
+    from universal_docs_mcp import planner
+
+    with monkeypatch.context() as capability:
+        capability.setattr(planner.os, "supports_dir_fd", set())
+        with pytest.raises(OSError, match="descriptor_relative"):
+            planner._read_source_scoped(tmp_path, Path("app.py"))
+    monkeypatch.setattr(
+        planner,
+        "_read_source_scoped",
+        lambda root, relative: (_ for _ in ()).throw(
+            OSError("descriptor_relative_traversal_unavailable")
+        ),
+    )
+    plan = plan_dependency_changes(
+        before, after, project_root=tmp_path, task="x", source_paths=("app.py",)
+    )
+    assert plan.reason == "task_signal_invalid"
+
+
+def test_real_alias_named_symbols_does_not_collide(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "app.py").write_text(
+        "import rich as __symbols__\n__symbols__.print()\n"
+    )
+    plan = plan_dependency_changes(
+        before, after, project_root=tmp_path, task="x", source_paths=("app.py",)
+    )
+    assert plan.status == "selected"
+    assert "print" in plan.as_dict()["selection"]["symbols"]
+    assert "__symbols__->rich" in plan.as_dict()["selection"]["aliases"]
+
+
 def test_cli_source_options_reach_planner(tmp_path):
     before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
     (tmp_path / "app.py").write_text(
