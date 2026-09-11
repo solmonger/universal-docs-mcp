@@ -129,10 +129,10 @@ def _candidate(key: str, before: dict[str, Pin], after: dict[str, Pin]) -> Depen
     )
 
 
-def _select(candidates: list[DependencyChange], package: str | None, source: str) -> Plan:
+def _select(candidates: list[DependencyChange | Plan], package: str | None, source: str) -> Plan:
     if package is not None:
         wanted = canonicalize_python_name(package)
-        matches = [item for item in candidates if canonicalize_python_name(item.package) == wanted]
+        matches = [item for item in candidates if canonicalize_python_name(item.package or "") == wanted]
         if not matches:
             return _abstain("unknown_package", package=wanted, source=source)
         item = matches[0]
@@ -140,6 +140,8 @@ def _select(candidates: list[DependencyChange], package: str | None, source: str
         return _abstain("multiple_dependency_changes", package=None, source=source)
     else:
         item = candidates[0]
+    if isinstance(item, Plan):
+        return item
     return Plan("selected", item.reason, item.package, "python", item.previous_version, item.target_version, item.resolution_source)
 
 
@@ -166,7 +168,7 @@ def plan_dependency_changes(
     changes = [_candidate(key, before_index, after_index) for key in all_keys]
     actionable = [item for item in changes if isinstance(item, DependencyChange)]
     if package is not None:
-        return _select(actionable, package, source)
+        return _select(changes, package, source)
     if len(actionable) == 1:
         return _select(actionable, None, source)
     if len(actionable) > 1:

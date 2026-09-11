@@ -69,6 +69,28 @@
       }
     },
     {
+      "actual_reason": "target_version_unresolved",
+      "actual_status": "abstained",
+      "expected_reason": "target_version_unresolved",
+      "expected_status": "abstained",
+      "id": "explicit-range",
+      "pass": true,
+      "plan": {
+        "context_max_bytes": 4096,
+        "ecosystem": "python",
+        "freshness_mode": "require_check",
+        "package": "demo",
+        "previous_version": null,
+        "query": null,
+        "reason": "target_version_unresolved",
+        "resolution_source": "requirements.txt",
+        "schema": "universal-docs.plan/v1",
+        "section_ids": [],
+        "status": "abstained",
+        "target_version": null
+      }
+    },
+    {
       "actual_reason": "dependency_removed",
       "actual_status": "abstained",
       "expected_reason": "dependency_removed",
@@ -91,20 +113,20 @@
       }
     },
     {
-      "actual_reason": "target_version_unresolved",
+      "actual_reason": "dependency_unchanged",
       "actual_status": "abstained",
-      "expected_reason": "target_version_unresolved",
+      "expected_reason": "dependency_unchanged",
       "expected_status": "abstained",
-      "id": "range",
+      "id": "unchanged",
       "pass": true,
       "plan": {
         "context_max_bytes": 4096,
         "ecosystem": "python",
         "freshness_mode": "require_check",
-        "package": "demo",
+        "package": null,
         "previous_version": null,
         "query": null,
-        "reason": "target_version_unresolved",
+        "reason": "dependency_unchanged",
         "resolution_source": "requirements.txt",
         "schema": "universal-docs.plan/v1",
         "section_ids": [],
@@ -135,20 +157,42 @@
       }
     },
     {
-      "actual_reason": "dependency_unchanged",
+      "actual_reason": "previous_version_unresolved",
       "actual_status": "abstained",
-      "expected_reason": "dependency_unchanged",
+      "expected_reason": "previous_version_unresolved",
       "expected_status": "abstained",
-      "id": "unchanged",
+      "id": "previous-unresolved",
       "pass": true,
       "plan": {
         "context_max_bytes": 4096,
         "ecosystem": "python",
         "freshness_mode": "require_check",
-        "package": null,
+        "package": "demo",
         "previous_version": null,
         "query": null,
-        "reason": "dependency_unchanged",
+        "reason": "previous_version_unresolved",
+        "resolution_source": "requirements.txt",
+        "schema": "universal-docs.plan/v1",
+        "section_ids": [],
+        "status": "abstained",
+        "target_version": null
+      }
+    },
+    {
+      "actual_reason": "unknown_package",
+      "actual_status": "abstained",
+      "expected_reason": "unknown_package",
+      "expected_status": "abstained",
+      "id": "absent-amid-other",
+      "pass": true,
+      "plan": {
+        "context_max_bytes": 4096,
+        "ecosystem": "python",
+        "freshness_mode": "require_check",
+        "package": "missing",
+        "previous_version": null,
+        "query": null,
+        "reason": "unknown_package",
         "resolution_source": "requirements.txt",
         "schema": "universal-docs.plan/v1",
         "section_ids": [],
@@ -263,7 +307,7 @@
         "schema": "universal-docs.plan/v1",
         "section_ids": [],
         "status": "selected",
-        "target_version": "1.1.0"
+        "target_version": "2.0.0"
       }
     },
     {
@@ -355,28 +399,6 @@
       }
     },
     {
-      "actual_reason": "unsupported_manifest",
-      "actual_status": "abstained",
-      "expected_reason": "unsupported_manifest",
-      "expected_status": "abstained",
-      "id": "unsupported",
-      "pass": true,
-      "plan": {
-        "context_max_bytes": 4096,
-        "ecosystem": "python",
-        "freshness_mode": "require_check",
-        "package": null,
-        "previous_version": null,
-        "query": null,
-        "reason": "unsupported_manifest",
-        "resolution_source": "package.json",
-        "schema": "universal-docs.plan/v1",
-        "section_ids": [],
-        "status": "abstained",
-        "target_version": null
-      }
-    },
-    {
       "actual_reason": "exact_dependency_changed",
       "actual_status": "selected",
       "expected_reason": "exact_dependency_changed",
@@ -389,28 +411,6 @@
         "freshness_mode": "require_check",
         "package": "demo",
         "previous_version": "0.9.0",
-        "query": "migration upgrade breaking changes quick start",
-        "reason": "exact_dependency_changed",
-        "resolution_source": "requirements.txt",
-        "schema": "universal-docs.plan/v1",
-        "section_ids": [],
-        "status": "selected",
-        "target_version": "1.0.0"
-      }
-    },
-    {
-      "actual_reason": "exact_dependency_changed",
-      "actual_status": "selected",
-      "expected_reason": "exact_dependency_changed",
-      "expected_status": "selected",
-      "id": "partial",
-      "pass": true,
-      "plan": {
-        "context_max_bytes": 4096,
-        "ecosystem": "python",
-        "freshness_mode": "require_check",
-        "package": "demo",
-        "previous_version": "1.0.0",
         "query": "migration upgrade breaking changes quick start",
         "reason": "exact_dependency_changed",
         "resolution_source": "requirements.txt",
@@ -445,12 +445,13 @@
   ],
   "metrics": {
     "all_plans_without_absolute_paths": true,
-    "median_planning_ms": 0.147,
+    "median_planning_ms": 0.157,
     "pass_count": 20,
     "precision_percent": 100.0,
     "required_abstention_percent": 100.0,
     "silent_latest_substitutions": 0
   },
   "schema": "universal-docs.plan-benchmark/v1",
+  "semantic_digest": "e41083075f0db3c64cbfbf3cfc7e4b4d47a019c6efe39a1f71b650313d7e4f1b",
   "status": "computed_offline"
 }

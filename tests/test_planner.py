@@ -124,5 +124,30 @@ def test_selected_plan_joins_preflight_and_delivery_fixture():
     assert "migration quick start" in packet
 
 
+@pytest.mark.parametrize(
+    ("before", "after", "package", "reason", "status", "expected_source"),
+    [
+        ("demo==1.0.0\nother==2.0.0\n", "demo>=2\nother==2.0.0\n", "demo", "target_version_unresolved", "abstained", "requirements.txt"),
+        ("demo==1.0.0\nother==2.0.0\n", "other==2.0.0\n", "demo", "dependency_removed", "abstained", "requirements.txt"),
+        ("demo==1.0.0\nother==2.0.0\n", "demo==1.0.0\nother==2.0.0\n", "demo", "dependency_unchanged", "abstained", "requirements.txt"),
+        ("demo==1.0.0\nother==2.0.0\n", "demo @ https://example.test/demo.whl\nother==2.0.0\n", "demo", "non_registry_reference", "abstained", "requirements.txt"),
+        ("demo>=1\nother==2.0.0\n", "demo==2.0.0\nother==2.0.0\n", "demo", "previous_version_unresolved", "abstained", "requirements.txt"),
+        ("demo==1.0.0\nother==2.0.0\n", "demo==1.1.0\nother==2.0.0\n", "missing", "unknown_package", "abstained", "requirements.txt"),
+    ],
+)
+def test_explicit_package_preserves_non_actionable_outcome(
+    before, after, package, reason, status, expected_source, tmp_path
+):
+    before_path, after_path = write_pair(tmp_path, before, after)
+    plan = plan_dependency_changes(
+        before_path, after_path, project_root=tmp_path, package=package
+    )
+    assert (plan.reason, plan.status, plan.package, plan.resolution_source) == (
+        reason,
+        status,
+        package if package != "missing" else "missing",
+        expected_source,
+    )
+
 def test_canonical_name_uses_pep503():
     assert canonicalize_python_name("My_Package.Name") == "my-package-name"
