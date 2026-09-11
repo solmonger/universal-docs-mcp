@@ -37,6 +37,47 @@ MAX_HOOK_OUTPUT_BYTES = 16 * 1024
 MIN_HOOK_TIMEOUT_MS = 50
 MAX_HOOK_TIMEOUT_MS = 45_000
 
+# This is the complete, production-owned vocabulary emitted in a block payload.
+# Keep the doctor seam closed over this finite set: prefixes are not taxonomy.
+COMMAND_HOOK_BLOCK_CODES = frozenset(
+    {
+        "invalid_hook_event",
+        "request_too_large",
+        "preflight_unavailable",
+        "preflight_timeout",
+        "preflight_interrupted",
+        "preflight_stdout_too_large",
+        "preflight_nonzero",
+        "preflight_malformed",
+        "preflight_not_found",
+        "preflight_empty_context",
+        "preflight_invalid_receipt",
+        "preflight_no_match",
+        "adapter_output_too_large",
+        "response_too_large",
+        "path_must_be_absolute",
+        "file_unavailable",
+        "request_file_too_large",
+        "request_file_not_regular",
+        "request_file_invalid",
+        "config_file_too_large",
+        "config_file_not_regular",
+        "config_file_invalid",
+        "command_invalid",
+        "command_too_large",
+        "executable_must_be_absolute",
+        "executable_unavailable",
+        "executable_not_regular",
+        "executable_not_executable",
+        "timeout_invalid",
+        "request_invalid",
+        "config_argument_conflict",
+        "request_argument_conflict",
+        "executable_required",
+        "explicit_target_incomplete",
+    }
+)
+
 Harness = Literal["claude", "codex"]
 
 

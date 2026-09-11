@@ -49,11 +49,11 @@ def test_clean_apply_readback_and_shell_quoting(tmp_path: Path):
     root = tmp_path / "project with spaces"
     rc, receipt = call(root, apply=True)
     assert rc == 0
-    assert outputs(root) == {"before/requirements.txt", "after/requirements.txt", ".universal-docs/adapter.json", ".claude/settings.json"}
+    assert outputs(root) == {"before/requirements.txt", "after/requirements.txt", ".universal-docs/adapter.json", ".universal-docs/install-state.json", ".claude/settings.json"}
     settings = json.loads((root / ".claude/settings.json").read_text())
     command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     assert "universal-docs-command-hook" in command and shlex.quote(str(root / ".universal-docs/adapter.json")) in command
-    assert receipt["proposed_relative_paths"] == [".universal-docs/adapter.json", ".claude/settings.json"]
+    assert receipt["proposed_relative_paths"] == [".universal-docs/adapter.json", ".claude/settings.json", ".universal-docs/install-state.json"]
     assert (root / ".universal-docs/adapter.json").stat().st_mode & 0o777 == 0o600
 
 
@@ -160,25 +160,40 @@ def test_malformed_duplicate_and_conflicting_hook(tmp_path: Path):
     assert call(tmp_path)[1]["reason"] == "conflicting_universal_docs_hook"
 
 
-def test_idempotence_and_injected_adapter_failure_leave_settings_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_same_plan_is_exactly_idempotent_including_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert call(tmp_path, apply=True)[0] == 0
-    paths = [tmp_path / ".universal-docs/adapter.json", tmp_path / ".claude/settings.json"]
+    paths = [tmp_path / ".universal-docs/adapter.json", tmp_path / ".claude/settings.json", tmp_path / ".universal-docs/install-state.json"]
     before = {p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in paths}
     files_before = outputs(tmp_path)
     rc, receipt = call(tmp_path, apply=True)
     assert rc == 0 and receipt["changed"] is False
     assert outputs(tmp_path) == files_before
     assert {p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in paths} == before
+
+
+def test_changed_plan_is_active_conflict_with_zero_writes(tmp_path: Path):
+    assert call(tmp_path, apply=True)[0] == 0
+    (tmp_path / "after/requirements.txt").write_text("demo==1.0.2\n")
+    paths = [p for p in tmp_path.rglob("*") if p.is_file()]
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in paths}
+    out = io.BytesIO()
+    rc = product_cli.main(["init", "--harness", "claude-code", "--project-root", str(tmp_path), "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply"], stdout=out)
+    receipt = json.loads(out.getvalue())
+    assert rc == 1 and receipt["reason"] == "active_install_conflict"
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode) for p in paths} == before
+
+
+def test_fresh_root_injected_adapter_failure_rolls_back_exactly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = tmp_path / "fresh"
     original = product_cli._atomic_write
     def fail_adapter(path, raw):
         if path.name == "adapter.json":
             raise OSError("injected")
         return original(path, raw)
     monkeypatch.setattr(product_cli, "_atomic_write", fail_adapter)
-    assert call(tmp_path, apply=True, after_version="1.0.2")[1]["reason"] == "write_failed"
-    assert paths[1].read_bytes() == before[paths[1]][0]
-
-
+    rc, receipt = call(root, apply=True)
+    assert rc == 1 and receipt["reason"] == "write_failed"
+    assert outputs(root) == {"before/requirements.txt", "after/requirements.txt"}
 @pytest.mark.parametrize("preexisting", [False, True])
 def test_settings_failure_restores_adapter_exactly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preexisting: bool):
     adapter_path = tmp_path / ".universal-docs/adapter.json"
