@@ -354,6 +354,23 @@ def test_source_backed_rich_selection_reaches_preflight(tmp_path):
     assert request.query == payload["query"]
 
 
+def test_source_backed_bare_import_abstains_without_package_signal(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "app.py").write_text("import rich\n")
+    plan = plan_dependency_changes(
+        before,
+        after,
+        project_root=tmp_path,
+        task="upgrade Rich",
+        source_paths=("app.py",),
+    )
+    payload = plan.as_dict()
+    assert plan.status == "abstained"
+    assert plan.reason == "task_signal_not_found"
+    assert payload["query"] is None
+    assert "selection" not in payload
+
+
 def test_source_backed_alias_and_keywords_are_deterministic(tmp_path):
     before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
     (tmp_path / "app.py").write_text("import rich as r\nr.print('x', markup=False)\n")
