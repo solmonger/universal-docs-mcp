@@ -70,6 +70,25 @@ def test_context_hash_binding_and_control_has_no_context(tmp_path):
     assert (tmp_path / "context.md").read_bytes() == b"exact context\n"
 
 
+def test_agent_task_metadata_is_opaque_but_receipt_keeps_case_id(tmp_path):
+    secret_case_id = "sqlalchemy-14-to-2-select-secret-token"
+    manifest, fixture_root = _manifest(tmp_path, id=secret_case_id)
+    observed = tmp_path / "agent-visible-task.json"
+    agent = _command(
+        "import json; from pathlib import Path; "
+        f"Path({str(observed)!r}).write_text(Path('.benchmark/task.json').read_text()); "
+        "raise SystemExit(0)"
+    )
+
+    receipt = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, agent)
+
+    task = json.loads(observed.read_text())
+    assert set(task) == {"ecosystem", "package", "target_version", "task"}
+    assert "id" not in task
+    assert secret_case_id not in observed.read_text()
+    assert receipt["id"] == secret_case_id
+
+
 def test_oracle_pass_and_fail_are_recorded(tmp_path):
     manifest, fixture_root = _manifest(tmp_path)
     agent = _command("raise SystemExit(0)")
