@@ -508,7 +508,13 @@ def _read_existing(
 
 def _validate_project_topology(root: Path) -> None:
     """Reject project control directories redirected through links or special files."""
-    for relative in (Path(".universal-docs/adapter.json"), Path(".universal-docs/install-state.json"), Path(".universal-docs/rollback-tombstone.json"), Path(".claude/settings.json")):
+    for relative in (
+        Path(".universal-docs/adapter.json"),
+        Path(".universal-docs/install-state.json"),
+        Path(".universal-docs/rollback-tombstone.json"),
+        Path(".universal-docs/backups/_probe.json"),
+        Path(".claude/settings.json"),
+    ):
         _validate_output_parent(root, root / relative)
 
 
@@ -621,6 +627,20 @@ def _validate_output_parent(root: Path, path: Path) -> None:
 
 def _is_universal(command: Any) -> bool:
     return isinstance(command, str) and _HOOK_NAME in command
+
+
+def _settings_has_universal_hook(settings: dict[str, Any]) -> bool:
+    event = (
+        settings.get("hooks", {}).get("UserPromptSubmit")
+        if isinstance(settings.get("hooks"), dict)
+        else None
+    )
+    return any(
+        isinstance(item, dict) and _is_universal(item.get("command"))
+        for group in event or []
+        if isinstance(group, dict)
+        for item in group.get("hooks", [])
+    )
 
 
 def _settings_with_hook(
@@ -964,9 +984,18 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
                 missing=None,
                 reason="rollback_tombstone_invalid",
             )
-            if tombstone["preimage_sha256"] is not None and (
-                current is None or _sha256(current) != tombstone["adapter_sha256"]
+            if (
+                (tombstone["preimage_sha256"] is None and current is not None)
+                or (
+                    tombstone["preimage_sha256"] is not None
+                    and (current is None or _sha256(current) != tombstone["adapter_sha256"])
+                )
             ):
+                state_status, state_reason = "fail", "rollback_tombstone_invalid"
+            tombstone_settings, _, tombstone_settings_error = _doctor_read_json(
+                root / ".claude/settings.json", "settings"
+            )
+            if tombstone_settings_error or tombstone_settings is None or _settings_has_universal_hook(tombstone_settings):
                 state_status, state_reason = "fail", "rollback_tombstone_invalid"
     except ValueError as exc:
         state_status, state_reason = "fail", str(exc)
@@ -1339,6 +1368,11 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
             if (adapter is None and tombstone["preimage_sha256"] is not None) or (
                 adapter is not None and _sha256(adapter) != tombstone["adapter_sha256"]
             ):
+                raise ValueError("rollback_tombstone_invalid")
+            settings, _, settings_error = _doctor_read_json(
+                root / ".claude/settings.json", "settings"
+            )
+            if settings_error or settings is None or _settings_has_universal_hook(settings):
                 raise ValueError("rollback_tombstone_invalid")
             return {
                 "schema": _ROLLBACK_SCHEMA,
