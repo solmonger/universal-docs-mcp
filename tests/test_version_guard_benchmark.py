@@ -128,7 +128,7 @@ def test_malformed_cases_and_unsafe_paths_are_rejected():
 def test_redaction_and_receipt_omit_paths_and_context_body(tmp_path):
     manifest, fixture_root = _manifest(
         tmp_path,
-        task="use token=SUPER_SECRET and /Users/operator/private.txt",
+        task="use token=SUPER_SECRET and /tmp/private.txt",
         test_command=_command("raise SystemExit(0)"),
         context_files={"manual": "context.md"},
     )
