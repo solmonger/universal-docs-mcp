@@ -35,10 +35,17 @@ _ROLLBACK_SCHEMA = "universal-docs.rollback/v1"
 _DOCTOR_MAX_FILE_BYTES = 64 * 1024
 
 
+def _receipt_text(value: Any, *, limit: int = 256) -> str:
+    text = value if isinstance(value, str) else str(value)
+    text = "".join(char if char in "\t\n\r" or ord(char) >= 32 else "?" for char in text)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def _doctor_check(
     check_id: str, status: str, reason: str, **metadata: Any
 ) -> dict[str, Any]:
-    return {"id": check_id, "status": status, "reason": reason, "metadata": metadata}
+    return {"id": _receipt_text(check_id), "status": _receipt_text(status),
+            "reason": _receipt_text(reason), "metadata": metadata}
 
 
 def _doctor_read_json(
@@ -428,7 +435,24 @@ _INIT_ERROR_REASONS = {
     "active_install_conflict",
     "install_state_invalid",
     "recovery_required",
+    "response_too_large",
+    "arguments_too_large",
 }
+
+# Public rollback reasons are deliberately finite.  Exception text is never a
+# receipt field: it can contain paths, secrets, terminal controls, or megabytes.
+_ROLLBACK_ERROR_REASONS = {
+    "project_root_invalid", "output_parent_invalid", "recovery_required",
+    "install_state_invalid", "install_state_missing", "rollback_tombstone_invalid",
+    "rollback_adapter_invalid", "rollback_settings_invalid", "rollback_live_mismatch",
+    "rollback_hook_ambiguous_or_missing", "rollback_backup_invalid", "rollback_state_invalid",
+    "rollback_failed", "recovery_failed", "response_too_large", "arguments_too_large",
+}
+
+
+def _known_reason(exc: BaseException, allowed: set[str], fallback: str) -> str:
+    value = exc.args[0] if len(exc.args) == 1 else None
+    return value if isinstance(value, str) and value in allowed else fallback
 
 
 class _Parser(argparse.ArgumentParser):
@@ -474,6 +498,9 @@ def _safe_relative(value: str, root: Path) -> Path:
 def _validate_root(root: Path, *, absolute_required: bool = False) -> Path:
     try:
         if absolute_required and not root.is_absolute():
+            raise ValueError("project_root_invalid")
+        # A project root is an authority boundary; do not silently redirect it.
+        if root.is_symlink():
             raise ValueError("project_root_invalid")
         resolved = root.expanduser().resolve(strict=True)
         if not resolved.is_dir():
@@ -1416,7 +1443,7 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
             "live_adapter_sha256": _sha256(adapter_raw) if adapter_raw else None,
         },
     }
-    return receipt, 0 if status == "pass" else 1
+    return _bounded_doctor_receipt(receipt), 0 if status == "pass" else 1
 
 
 def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any], int]:
@@ -1538,6 +1565,7 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
         }
         for path, raw, kind in backup_specs
     ]
+    _assert_receipt_fits(receipt, _INIT_SCHEMA)
     if existing_state is not None:
         live_matches = _state_live_matches(
             existing_state, old_adapter, settings, hook, adapter_path
@@ -1770,7 +1798,9 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
         "body_omitted": True,
     }
     if not apply:
+        _assert_receipt_fits(receipt, _ROLLBACK_SCHEMA)
         return receipt, 0
+    _assert_receipt_fits(receipt, _ROLLBACK_SCHEMA)
     old_adapter_stat, old_settings_stat, old_state_stat = (
         adapter_path.stat(),
         settings_path.stat(),
@@ -1871,18 +1901,62 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
     return receipt, 0
 
 
+def _receipt_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+    ).encode("ascii") + b"\n"
+
+
+def _bounded_doctor_receipt(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep check identity load-bearing while dropping diagnostic bulk."""
+    if len(_receipt_bytes(payload)) <= MAX_OUTPUT_BYTES:
+        return payload
+    compact = deepcopy(payload)
+    compact["checks"] = [
+        {"id": item.get("id"), "status": item.get("status"),
+         "reason": item.get("reason"), "metadata": {}}
+        for item in payload.get("checks", [])
+        if isinstance(item, dict)
+    ]
+    compact["cache"] = {}
+    compact["source_probe"] = {}
+    compact["rollback"] = {"instructions": "rollback receipt metadata omitted"}
+    if len(_receipt_bytes(compact)) <= MAX_OUTPUT_BYTES:
+        return compact
+    # Check identity and aggregate status are the non-optional contract.
+    return {
+        "schema": _DOCTOR_SCHEMA,
+        "status": payload.get("status", "fail"),
+        "checks": compact["checks"],
+        "cache": {},
+        "source_probe": {},
+        "rollback": {},
+    }
+
+
+def _assert_receipt_fits(payload: dict[str, Any], schema: str) -> None:
+    if len(_receipt_bytes(payload)) > MAX_OUTPUT_BYTES:
+        raise ValueError("response_too_large")
+
+
 def _emit(
     payload: dict[str, Any], output: BinaryIO, *, schema: str = _INIT_SCHEMA
 ) -> None:
-    encoded = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
-    ).encode()
-    if len(encoded) + 1 > MAX_OUTPUT_BYTES:
-        encoded = json.dumps(
-            {"schema": schema, "status": "fail", "reason": "response_too_large"},
-            separators=(",", ":"),
-        ).encode()
-    output.write(encoded + b"\n")
+    encoded = _receipt_bytes(payload)
+    if len(encoded) > MAX_OUTPUT_BYTES:
+        encoded = _receipt_bytes(
+            {"schema": schema, "status": "fail", "reason": "response_too_large"}
+        )
+    try:
+        written = output.write(encoded)
+    except TypeError:
+        # String streams are a supported test/embedding seam.
+        written = output.write(encoded.decode("ascii"))
+        expected = len(encoded.decode("ascii"))
+    else:
+        expected = len(encoded)
+    if written is not None and written != expected:
+        raise OSError("output_write_failed")
     output.flush()
 
 
@@ -1891,7 +1965,14 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
     output = stdout or sys.stdout.buffer
     args: argparse.Namespace | None = None
     raw_argv = argv if argv is not None else sys.argv[1:]
+    emitting = False
     try:
+        try:
+            argv_bytes = sum(len(os.fsencode(item)) + 1 for item in raw_argv)
+        except (TypeError, UnicodeError, ValueError):
+            raise ValueError("arguments_too_large") from None
+        if argv_bytes > 128 * 1024 or len(raw_argv) > 512:
+            raise ValueError("arguments_too_large")
         args = _parser().parse_args(argv)
         if args.command == "plan":
             root = _validate_root(args.project_root)
@@ -1903,21 +1984,26 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
         elif args.command == "init":
             root = _validate_root(args.project_root, absolute_required=True)
             payload, code = _init_receipt(args, root)
+            emitting = True
             _emit(payload, output)
             return code
         elif args.command == "doctor":
             root = _validate_root(args.project_root, absolute_required=True)
             payload, code = _doctor_receipt(root)
+            emitting = True
             _emit(payload, output, schema=_DOCTOR_SCHEMA)
             return code
         elif args.command == "rollback":
             root = _validate_root(args.project_root, absolute_required=True)
             payload, code = _rollback_receipt(root, args.apply)
+            emitting = True
             _emit(payload, output, schema=_ROLLBACK_SCHEMA)
             return code
         else:
             raise ValueError("command_required")
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        if emitting:
+            raise
         command = (
             args.command if args is not None else (raw_argv[0] if raw_argv else None)
         )
@@ -1926,7 +2012,7 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
                 {
                     "schema": _DOCTOR_SCHEMA,
                     "status": "fail",
-                    "reason": str(exc) or "doctor_invalid",
+                    "reason": _known_reason(exc, _INIT_ERROR_REASONS | {"project_root_invalid", "command_required"}, "doctor_invalid"),
                 },
                 output,
                 schema=_DOCTOR_SCHEMA,
@@ -1937,7 +2023,7 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
                 {
                     "schema": _ROLLBACK_SCHEMA,
                     "status": "fail",
-                    "reason": str(exc) or "rollback_invalid",
+                    "reason": _known_reason(exc, _ROLLBACK_ERROR_REASONS | {"command_required"}, "rollback_invalid"),
                 },
                 output,
                 schema=_ROLLBACK_SCHEMA,
@@ -1946,7 +2032,7 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
         if command == "init":
             reason = str(exc)
             if reason not in _INIT_ERROR_REASONS:
-                reason = "write_failed" if args.apply else "init_invalid"
+                reason = "write_failed" if getattr(args, "apply", False) else "init_invalid"
             mode = "apply" if getattr(args, "apply", False) else "dry-run"
             _emit(
                 {
