@@ -1272,13 +1272,17 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
             else ("fail", "install_state_missing")
         )
     except ValueError as exc:
-        state, state_raw, state_status, state_reason = None, None, "fail", str(exc)
+        state, state_raw, state_status, state_reason = (
+            None, None, "fail", _known_reason(exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid")
+        )
     try:
         marker, _ = _read_recovery_marker(root)
         if marker is not None:
             state_status, state_reason = "fail", _RECOVERY_REQUIRED_REASON
     except ValueError as exc:
-        marker, _, state_status, state_reason = None, None, "fail", str(exc)
+        marker, _, state_status, state_reason = (
+            None, None, "fail", _known_reason(exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid")
+        )
     try:
         tombstone, _ = _read_tombstone(root)
         if tombstone is not None and state is not None:
@@ -1303,7 +1307,9 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
             if tombstone_settings_error or tombstone_settings is None or _settings_has_universal_hook(tombstone_settings):
                 state_status, state_reason = "fail", "rollback_tombstone_invalid"
     except ValueError as exc:
-        state_status, state_reason = "fail", str(exc)
+        state_status, state_reason = "fail", _known_reason(
+            exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid"
+        )
     if marker is not None:
         state_status, state_reason = "fail", _RECOVERY_REQUIRED_REASON
     checks.append(
