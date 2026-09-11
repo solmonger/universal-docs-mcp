@@ -6,7 +6,7 @@
   "task": "Update command parameter declaration to the Click 8 contract.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/click-7-to-8-parameter",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

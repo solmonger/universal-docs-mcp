@@ -1,11 +1,13 @@
-"""Offline oracle: classify only the declared version mismatch."""
+"""Offline oracle for a general coding error with no version-specific lift."""
+
 import json
 import subprocess
 import sys
-CASE_ID = 'stable-api-no-lift-control'
-EXPECTED = "wrong_version_api"
+
+CASE_ID = "stable-api-no-lift-control"
+EXPECTED = "general_coding_error"
 proc = subprocess.run([sys.executable, "app.py"], capture_output=True, text=True)
-marker = "WRONG_VERSION_API:packaging:24.0:LegacyVersion"
+marker = "GENERAL_CODING_ERROR:out_of_bounds_index"
 if proc.returncode == 0:
     print(json.dumps({"case_id": CASE_ID, "status": "passed", "failure_class": None, "setup_failure": False}))
     raise SystemExit(0)

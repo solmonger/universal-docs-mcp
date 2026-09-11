@@ -6,7 +6,7 @@
   "task": "Update console construction to the Rich 13 contract.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/rich-12-to-13-console",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

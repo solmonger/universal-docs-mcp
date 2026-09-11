@@ -1,11 +1,13 @@
-"""Deliberately broken baseline for stable-api-no-lift-control."""
-import versioned_api
+"""Deliberately broken general-coding baseline for the no-lift control."""
+
 
 def main():
-    getattr(versioned_api, 'LegacyVersion')()
+    values = ["stable-api"]
+    return values[1]
+
 
 if __name__ == "__main__":
     try:
         main()
-    except AttributeError as exc:
-        raise RuntimeError("WRONG_VERSION_API:packaging:24.0:LegacyVersion") from exc
+    except IndexError as exc:
+        raise RuntimeError("GENERAL_CODING_ERROR:out_of_bounds_index") from exc

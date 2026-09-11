@@ -1,6 +1,7 @@
 """Deliberately broken baseline for attrs-21-to-23-slots."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'attr_legacy')()
 

@@ -1,6 +1,7 @@
 """Deliberately broken baseline for packaging-22-to-24-version."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'LegacyVersion')()
 

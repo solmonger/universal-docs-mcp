@@ -6,7 +6,7 @@
   "task": "Update version comparison to the packaging 24 contract.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/packaging-22-to-24-version",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

@@ -6,7 +6,7 @@
   "task": "Update exception assertion to the pytest 8 contract.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/pytest-6-to-8-raises",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

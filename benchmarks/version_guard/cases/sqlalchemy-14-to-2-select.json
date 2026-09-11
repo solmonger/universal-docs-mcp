@@ -6,7 +6,7 @@
   "task": "Migrate query construction from the 1.4 query API to the 2.x select API.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/sqlalchemy-14-to-2-select",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

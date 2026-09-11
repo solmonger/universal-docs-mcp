@@ -1,6 +1,7 @@
 """Deliberately broken baseline for urllib3-1-to-2-timeout."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'TimeoutLegacy')()
 

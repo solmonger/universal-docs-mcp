@@ -120,7 +120,7 @@
       "id": "stable-api-no-lift-control",
       "initial_failure": {
         "case_id": "stable-api-no-lift-control",
-        "failure_class": "wrong_version_api",
+        "failure_class": "general_coding_error",
         "setup_failure": false,
         "status": "initial_failure"
       }
@@ -136,6 +136,6 @@
       }
     }
   ],
-  "corpus_sha256": "03268e37405b9964ee821a3025fbc88d98748ae327c7f8a9fcbd32a154b0a5b1",
+  "corpus_sha256": "591a3966974cc4bf369a25bc9183996013963df1e82ddb130e2a7d898c6cb63e",
   "schema": "universal-docs.corpus-receipt/v1"
 }

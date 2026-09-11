@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+
 CASE_ID = 'pydantic-v1-to-v2-model-dump'
 EXPECTED = "wrong_version_api"
 proc = subprocess.run([sys.executable, "app.py"], capture_output=True, text=True)

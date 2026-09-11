@@ -1,6 +1,7 @@
 """Deliberately broken baseline for rich-12-to-13-console."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'ConsoleLegacy')()
 

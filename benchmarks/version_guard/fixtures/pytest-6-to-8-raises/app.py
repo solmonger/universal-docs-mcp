@@ -1,6 +1,7 @@
 """Deliberately broken baseline for pytest-6-to-8-raises."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'raises_legacy')()
 

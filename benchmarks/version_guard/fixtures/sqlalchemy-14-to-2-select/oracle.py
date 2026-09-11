@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+
 CASE_ID = 'sqlalchemy-14-to-2-select'
 EXPECTED = "wrong_version_api"
 proc = subprocess.run([sys.executable, "app.py"], capture_output=True, text=True)

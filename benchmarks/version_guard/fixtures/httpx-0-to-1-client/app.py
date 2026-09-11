@@ -1,6 +1,7 @@
 """Deliberately broken baseline for httpx-0-to-1-client."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'ClientLegacy')()
 

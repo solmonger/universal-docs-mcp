@@ -3,14 +3,14 @@
   "ecosystem": "python",
   "package": "packaging",
   "target_version": "24.0",
-  "task": "Use the stable Version API; this control has no version-specific documentation lift.",
+  "task": "Exercise a stable API with a general coding failure; version-specific documentation cannot lift this control.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/stable-api-no-lift-control",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",
-  "expected_failure_class": "wrong_version_api",
+  "expected_failure_class": "general_coding_error",
   "evidence_type": "synthetic_stub",
   "evidence_note": "Synthetic local API stub for No-lift control: stable Version API; not live-package evidence."
 }

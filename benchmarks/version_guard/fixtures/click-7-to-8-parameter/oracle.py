@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+
 CASE_ID = 'click-7-to-8-parameter'
 EXPECTED = "wrong_version_api"
 proc = subprocess.run([sys.executable, "app.py"], capture_output=True, text=True)

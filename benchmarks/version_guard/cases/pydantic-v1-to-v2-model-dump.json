@@ -6,7 +6,7 @@
   "task": "Migrate the model serialization call from the v1 contract to the v2 contract.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/pydantic-v1-to-v2-model-dump",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

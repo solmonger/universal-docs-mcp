@@ -1,6 +1,7 @@
 """Deliberately broken baseline for click-7-to-8-parameter."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'option')()
 

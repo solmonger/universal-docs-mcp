@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+
 CASE_ID = 'rich-12-to-13-console'
 EXPECTED = "wrong_version_api"
 proc = subprocess.run([sys.executable, "app.py"], capture_output=True, text=True)

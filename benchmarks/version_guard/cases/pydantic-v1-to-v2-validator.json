@@ -6,7 +6,7 @@
   "task": "Migrate validator declaration from the v1 decorator to the v2 decorator.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/pydantic-v1-to-v2-validator",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

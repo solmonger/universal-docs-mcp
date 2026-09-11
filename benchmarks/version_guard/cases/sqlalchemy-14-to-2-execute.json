@@ -6,7 +6,7 @@
   "task": "Migrate execution from the 1.4 connection helper to the 2.x execute contract.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/sqlalchemy-14-to-2-execute",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

@@ -1,6 +1,7 @@
 """Deliberately broken baseline for sqlalchemy-14-to-2-execute."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'execute_legacy')()
 

@@ -6,7 +6,7 @@
   "task": "Update timeout construction to the urllib3 2 contract.",
   "workspace_fixture": "benchmarks/version_guard/fixtures/urllib3-1-to-2-timeout",
   "test_command": [
-    "python",
+    "python3",
     "oracle.py"
   ],
   "context_profile": "readme",

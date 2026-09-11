@@ -1,6 +1,7 @@
 """Deliberately broken baseline for pydantic-v1-to-v2-model-dump."""
 import versioned_api
 
+
 def main():
     getattr(versioned_api, 'dict')()
 
