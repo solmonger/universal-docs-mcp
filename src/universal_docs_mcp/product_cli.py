@@ -4,19 +4,156 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
+import importlib.metadata
 import json
 import os
 import shlex
 import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, BinaryIO, NoReturn
 
+from . import __version__
+from .command_hook import MAX_HOOK_OUTPUT_BYTES
 from .planner import plan_dependency_changes, to_preflight_request
 
 MAX_OUTPUT_BYTES = 16 * 1024
+_DOCTOR_SCHEMA = "universal-docs.doctor/v1"
 _INIT_SCHEMA = "universal-docs.init/v1"
+_DOCTOR_MAX_FILE_BYTES = 64 * 1024
+
+
+def _doctor_check(check_id: str, status: str, reason: str, **metadata: Any) -> dict[str, Any]:
+    return {"id": check_id, "status": status, "reason": reason, "metadata": metadata}
+
+
+def _doctor_read_json(path: Path, reason: str) -> tuple[dict[str, Any] | None, bytes | None, str | None]:
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return None, None, reason + "_not_regular"
+        with path.open("rb") as stream:
+            raw = stream.read(_DOCTOR_MAX_FILE_BYTES + 1)
+        if len(raw) > _DOCTOR_MAX_FILE_BYTES:
+            return None, None, reason + "_too_large"
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_json_constant)
+        if not isinstance(value, dict):
+            return None, raw, reason + "_invalid"
+        return value, raw, None
+    except FileNotFoundError:
+        return None, None, reason + "_missing"
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        return None, None, reason + "_invalid"
+
+
+def _doctor_installation() -> dict[str, Any]:
+    try:
+        module = importlib.import_module("universal_docs_mcp")
+        module_path = str(Path(module.__file__).resolve())
+        distribution = importlib.metadata.distribution("universal-docs-mcp")
+        version = distribution.version
+        files = distribution.files or []
+        roots = [Path(distribution.locate_file(item)).resolve() for item in files]
+        owned = any(Path(module_path) == root or Path(module_path).is_relative_to(root) for root in roots)
+        ok = owned and version == getattr(module, "__version__", None) == __version__
+        return {"status": "pass" if ok else "fail", "reason": "identity_match" if ok else "identity_mismatch", "module_path": module_path, "installed_version": version, "executable": str(Path(sys.executable).resolve()), "owned": owned}
+    except (ImportError, importlib.metadata.PackageNotFoundError, OSError, TypeError):
+        return {"status": "fail", "reason": "installed_identity_unavailable", "module_path": None, "installed_version": None, "executable": str(Path(sys.executable).resolve())}
+
+
+def _doctor_cache(root: Path) -> tuple[dict[str, Any], str]:
+    configured = os.environ.get("UNIVERSAL_DOCS_CACHE_DIR")
+    cache = Path(configured).expanduser() if configured else Path.home() / ".cache" / "universal-docs-mcp"
+    try:
+        resolved = cache.resolve(strict=False)
+        safe = cache.is_absolute() and not cache.exists() or (cache.is_dir() and not cache.is_symlink())
+        isolated = safe and resolved == (root / ".universal-docs" / "cache").resolve(strict=False)
+        status = "pass" if isolated else "fail"
+        return {"scope": "project_installation" if isolated else "ambiguous_or_global", "identity": hashlib.sha256(str(resolved).encode()).hexdigest(), "available": safe}, status
+    except (OSError, RuntimeError):
+        return {"scope": "unknown", "identity": None, "available": False}, "unknown"
+
+
+def _doctor_probe(hook: Path, adapter: Path, request: dict[str, Any] | None) -> tuple[dict[str, Any], str]:
+    try:
+        command = [str(hook), "--harness", "claude", "--config", str(adapter)]
+        proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        try:
+            stdout, _stderr = proc.communicate(b"{}\n", timeout=45)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, 9)
+            except OSError:
+                proc.kill()
+            proc.wait(timeout=2)
+            return {}, "probe_timeout"
+        if proc.returncode != 0:
+            return {"returncode": proc.returncode}, "preflight_nonzero"
+        if len(stdout) > MAX_HOOK_OUTPUT_BYTES:
+            return {"stdout_bytes": len(stdout)}, "probe_output_too_large"
+        payload = json.loads(stdout.decode("utf-8"), object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_json_constant)
+        context = payload.get("hookSpecificOutput", {}).get("additionalContext") if isinstance(payload, dict) else None
+        if not isinstance(context, str) or "--- BEGIN UNTRUSTED DOCUMENTATION DATA ---" not in context or "--- END UNTRUSTED DOCUMENTATION DATA ---" not in context:
+            return {"returncode": proc.returncode}, "source_less_or_malformed"
+        required = ["Source SHA-256:", "Source version binding:", "Freshness policy:", "Freshness state:"]
+        if request and request.get("package"):
+            required += [f"Target package: {json.dumps(request['package'])}", f"Target version: {json.dumps(request.get('requested_version') or request.get('version'))}"]
+        if any(token not in context for token in required):
+            return {}, "source_metadata_mismatch"
+        digest = hashlib.sha256(context.encode()).hexdigest()
+        return {"returncode": 0, "packet_sha256": digest, "packet_bytes": len(stdout), "delimiters": True, "source_body_omitted": True}, "source_bearing"
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        return {}, "probe_malformed"
+
+
+def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
+    checks: list[dict[str, Any]] = []
+    identity = _doctor_installation()
+    checks.append(_doctor_check("installed_identity", identity["status"], identity["reason"], module_path=identity.get("module_path"), installed_version=identity.get("installed_version"), executable=identity.get("executable")))
+    adapter_path = root / ".universal-docs" / "adapter.json"
+    settings_path = root / ".claude" / "settings.json"
+    adapter, adapter_raw, adapter_error = _doctor_read_json(adapter_path, "adapter")
+    settings, settings_raw, settings_error = _doctor_read_json(settings_path, "settings")
+    checks.append(_doctor_check("adapter_readback", "fail" if adapter_error else "pass", adapter_error or "valid"))
+    checks.append(_doctor_check("settings_readback", "fail" if settings_error else "pass", settings_error or "valid"))
+    hook = _installation_executable(_HOOK_NAME)
+    preflight = _installation_executable(_PREFLIGHT_NAME)
+    executable_ok = all(path.is_absolute() and path.exists() and path.is_file() and not path.is_symlink() and os.access(path, os.X_OK) for path in (hook, preflight))
+    checks.append(_doctor_check("executables", "pass" if executable_ok else "fail", "regular_current_installation" if executable_ok else "executable_invalid", hook=str(hook), preflight=str(preflight)))
+    cache, cache_status = _doctor_cache(root)
+    checks.append(_doctor_check("cache_scope", cache_status, "explicit_project_installation" if cache_status == "pass" else "cache_scope_unsafe", scope=cache["scope"], identity=cache["identity"], available=cache["available"]))
+    hook_count = 0
+    expected_command = _hook_command(hook, adapter_path)
+    def is_universal_item(item: Any) -> bool:
+        command = item.get("command") if isinstance(item, dict) else None
+        if _is_universal(command):
+            return True
+        if not isinstance(command, str):
+            return False
+        try:
+            return bool(shlex.split(command) and shlex.split(command)[0] == str(hook))
+        except ValueError:
+            return False
+
+    if settings and isinstance(settings.get("hooks"), dict) and isinstance(settings["hooks"].get("UserPromptSubmit"), list):
+        for group in settings["hooks"]["UserPromptSubmit"]:
+            if isinstance(group, dict) and isinstance(group.get("hooks"), list):
+                hook_count += sum(1 for item in group["hooks"] if is_universal_item(item))
+    hook_ok = hook_count == 1 and settings is not None
+    if hook_ok and settings is not None:
+        actual = next(item["command"] for group in settings["hooks"]["UserPromptSubmit"] for item in group["hooks"] if is_universal_item(item))
+        hook_ok = actual == expected_command
+    checks.append(_doctor_check("harness_seam", "pass" if hook_ok else "fail", "exact_hook" if hook_ok else "hook_missing_conflicting_or_mismatched", count=hook_count))
+    adapter_ok = bool(adapter and adapter.get("preflight_command") == [str(preflight)] and adapter.get("timeout_ms") == 30000)
+    checks.append(_doctor_check("adapter_contract", "pass" if adapter_ok else "fail", "exact_contract" if adapter_ok else "adapter_contract_mismatch"))
+    probe_meta, probe_reason = _doctor_probe(hook, adapter_path, adapter.get("request") if isinstance(adapter, dict) else None) if hook_ok and adapter_ok and executable_ok else ({}, "probe_prerequisite_failed")
+    checks.append(_doctor_check("source_probe", "pass" if probe_reason == "source_bearing" else "fail", probe_reason, **probe_meta))
+    status = "pass" if all(c["status"] == "pass" for c in checks) else "fail"
+    receipt = {"schema": _DOCTOR_SCHEMA, "status": status, "checks": checks, "cache": cache, "source_probe": probe_meta, "rollback": {"instructions": "Remove only .universal-docs/adapter.json and the Universal Docs UserPromptSubmit hook; restore only the hash-bound settings backup.", "command": "universal-docs rollback --adapter .universal-docs/adapter.json --hook UserPromptSubmit --backup-sha256 <recorded-hash>"}}
+    return receipt, 0 if status == "pass" else 1
 _HOOK_NAME = "universal-docs-command-hook"
 _PREFLIGHT_NAME = "universal-docs-preflight"
 _INIT_ERROR_REASONS = {
@@ -49,6 +186,8 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--after", required=True)
     init.add_argument("--package")
     init.add_argument("--apply", action="store_true")
+    doctor = commands.add_parser("doctor", add_help=False)
+    doctor.add_argument("--project-root", required=True, type=Path)
     return parser
 
 
@@ -400,10 +539,10 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
     return receipt, 0
 
 
-def _emit(payload: dict[str, Any], output: BinaryIO) -> None:
+def _emit(payload: dict[str, Any], output: BinaryIO, *, schema: str = _INIT_SCHEMA) -> None:
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
     if len(encoded) + 1 > MAX_OUTPUT_BYTES:
-        encoded = json.dumps({"schema": _INIT_SCHEMA, "status": "abstained", "reason": "response_too_large"}, separators=(",", ":")).encode()
+        encoded = json.dumps({"schema": schema, "status": "fail", "reason": "response_too_large"}, separators=(",", ":")).encode()
     output.write(encoded + b"\n")
     output.flush()
 
@@ -423,6 +562,11 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
             root = _validate_root(args.project_root, absolute_required=True)
             payload, code = _init_receipt(args, root)
             _emit(payload, output)
+            return code
+        elif args.command == "doctor":
+            root = _validate_root(args.project_root, absolute_required=True)
+            payload, code = _doctor_receipt(root)
+            _emit(payload, output, schema=_DOCTOR_SCHEMA)
             return code
         else:
             raise ValueError("command_required")
