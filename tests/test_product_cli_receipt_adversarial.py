@@ -38,11 +38,69 @@ def test_missing_and_unknown_arguments_are_one_bounded_receipt(command, schema):
         assert receipt["status"] in {"fail", "abstained"}
 
 
-def test_invalid_apply_placement_is_not_a_success():
-    rc, receipt = invoke(["doctor", "--apply"])
-    assert rc != 0
-    assert receipt["schema"] == "universal-docs.doctor/v1"
-    assert receipt["status"] == "fail"
+def test_root_matrix_is_command_scoped_and_write_free(tmp_path: Path):
+    commands = {
+        "init": "universal-docs.init/v1",
+        "doctor": "universal-docs.doctor/v1",
+        "rollback": "universal-docs.rollback/v1",
+    }
+    regular = tmp_path / "regular"
+    regular.write_text("not a directory")
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    roots = ["relative", str(tmp_path / "missing"), str(regular), str(link), str(fifo)]
+    before = tmp_path / "before.txt"
+    before.write_text("before")
+    after = tmp_path / "after.txt"
+    after.write_text("after")
+    valid = tmp_path / "valid"
+    valid.mkdir()
+    for command, schema in commands.items():
+        if command == "init":
+            argv = ["init", "--harness", "claude-code", "--project-root", str(valid), "--before", "before.txt", "--after", "after.txt"]
+        else:
+            argv = [command, "--project-root", str(valid)]
+        rc, receipt = invoke(argv)
+        assert receipt["schema"] == schema
+
+        for root in roots:
+            if command == "init":
+                argv = ["init", "--harness", "claude-code", "--project-root", root, "--before", str(before), "--after", str(after)]
+            else:
+                argv = [command, "--project-root", root]
+            snapshot = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+            rc, receipt = invoke(argv)
+            assert rc != 0
+            assert receipt["schema"] == schema
+            assert receipt["status"] == "fail" if command != "init" else receipt["status"] == "abstained"
+            assert receipt["reason"] == "project_root_invalid"
+            assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == snapshot
+
+
+def test_duplicate_guard_runs_before_parser_for_same_and_different_values(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    cases = [
+        ["doctor", "--project-root", root, "--project-root", root + "-other"],
+        ["rollback", "--project-root", root, "--project-root", root],
+        ["rollback", "--project-root", root, "--apply", "--apply"],
+        ["init", "--harness", "claude-code", "--harness", "claude-code", "--project-root", root, "--before", "a", "--after", "b"],
+        ["init", "--harness", "claude-code", "--project-root", root, "--project-root", root, "--before", "a", "--after", "b"],
+        ["init", "--harness", "claude-code", "--project-root", root, "--before", "a", "--after", "b", "--after", "c"],
+        ["init", "--harness", "claude-code", "--project-root", root, "--before", "a", "--after", "b", "--apply", "--apply"],
+        ["init", "--harness", "claude-code", "--project-root", root, "--before", "a", "--before", "b", "--after", "c"],
+    ]
+    def parser_must_not_run():
+        raise AssertionError("argparse ran before duplicate guard")
+    monkeypatch.setattr(product_cli, "_parser", parser_must_not_run)
+    for argv in cases:
+        rc, receipt = invoke(argv)
+        assert rc == 1
+        assert receipt["schema"] == {"init": "universal-docs.init/v1", "doctor": "universal-docs.doctor/v1", "rollback": "universal-docs.rollback/v1"}[argv[0]]
+        assert receipt["reason"] == "arguments_invalid"
 
 
 @pytest.mark.parametrize("root_kind", ["missing", "file", "symlink", "fifo"])

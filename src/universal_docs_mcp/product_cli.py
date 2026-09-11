@@ -437,6 +437,7 @@ _INIT_ERROR_REASONS = {
     "recovery_required",
     "response_too_large",
     "arguments_too_large",
+    "arguments_invalid",
 }
 
 # Public rollback reasons are deliberately finite.  Exception text is never a
@@ -447,6 +448,7 @@ _ROLLBACK_ERROR_REASONS = {
     "rollback_adapter_invalid", "rollback_settings_invalid", "rollback_live_mismatch",
     "rollback_hook_ambiguous_or_missing", "rollback_backup_invalid", "rollback_state_invalid",
     "rollback_failed", "recovery_failed", "response_too_large", "arguments_too_large",
+    "arguments_invalid",
 }
 
 
@@ -458,6 +460,29 @@ def _known_reason(exc: BaseException, allowed: set[str], fallback: str) -> str:
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         raise ValueError(message)
+
+
+_DUPLICATE_GUARDED_OPTIONS: dict[str, set[str]] = {
+    "init": {"--project-root", "--before", "--after", "--harness", "--apply"},
+    "doctor": {"--project-root"},
+    "rollback": {"--project-root", "--apply"},
+    "plan": {"--project-root", "--before", "--after"},
+}
+
+
+def _guard_duplicate_options(raw_argv: list[Any]) -> str | None:
+    """Reject ambiguous scalar/flag repetition before argparse sees argv."""
+    command = raw_argv[0] if raw_argv and isinstance(raw_argv[0], str) else None
+    guarded = _DUPLICATE_GUARDED_OPTIONS.get(command, set()) if command else set()
+    if not guarded:
+        return command
+    counts = {option: 0 for option in guarded}
+    for token in raw_argv[1:]:
+        if isinstance(token, str) and token in counts:
+            counts[token] += 1
+    if any(count > 1 for count in counts.values()):
+        raise ValueError("arguments_invalid")
+    return command
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1973,6 +1998,7 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
             raise ValueError("arguments_too_large") from None
         if argv_bytes > 128 * 1024 or len(raw_argv) > 512:
             raise ValueError("arguments_too_large")
+        _guard_duplicate_options(raw_argv)
         args = _parser().parse_args(argv)
         if args.command == "plan":
             root = _validate_root(args.project_root)
