@@ -60,6 +60,7 @@ def snapshot(root: Path) -> dict[str, tuple[bool, bytes | None, int | None, int 
         ".universal-docs/adapter.json",
         ".universal-docs/install-state.json",
         ".universal-docs/rollback-tombstone.json",
+        ".universal-docs/recovery-marker.json",
         ".claude/settings.json",
     ):
         path = root / relative
@@ -75,7 +76,13 @@ def snapshot(root: Path) -> dict[str, tuple[bool, bytes | None, int | None, int 
                 info.st_mtime_ns,
             )
     backups = root / ".universal-docs/backups"
-    result["backups"] = tuple(sorted(p.relative_to(root).as_posix() for p in backups.iterdir())) if backups.exists() else ()
+    if backups.exists():
+        result["backups"] = tuple(
+            (p.relative_to(root).as_posix(), p.read_bytes(), p.lstat().st_mode, p.lstat().st_mtime_ns)
+            for p in sorted(backups.iterdir())
+        )
+    else:
+        result["backups"] = ()
     return result
 
 
@@ -209,7 +216,17 @@ def test_each_compensation_restore_is_attempted_and_fails_closed(
     monkeypatch.setattr(product_cli, "_restore_file", fail_recovery)
     rc, receipt = call(root, "rollback", "--apply")
     assert rc == 1 and receipt["reason"] == "recovery_failed"
-    assert not (root / ".universal-docs/install-state.json").exists()
+    state_path = root / ".universal-docs/install-state.json"
+    marker_path = root / ".universal-docs/recovery-marker.json"
+    if compensation_target == "state":
+        assert not state_path.exists()
+        marker = json.loads(marker_path.read_text())
+        assert marker["schema"] == "universal-docs.recovery-marker/v1"
+        assert set(marker) == {"schema", "state_sha256", "adapter_sha256", "settings_sha256", "preimage_sha256"}
+        assert all(not Path(value).is_absolute() for value in marker.values() if isinstance(value, str))
+    else:
+        assert state_path.read_bytes() == product_cli._read_state(root)[1]
+        assert not marker_path.exists()
     assert "injected" not in json.dumps(receipt)
 
 
@@ -240,7 +257,7 @@ def test_compensation_failure_fails_closed_and_next_call_refuses(tmp_path, monke
     def fail_compensation(path, raw, mode, mtime_ns):
         nonlocal restore_calls
         restore_calls += 1
-        if restore_calls == 3:  # forward adapter, compensation settings, compensation adapter
+        if restore_calls == 4:  # forward adapter, compensation settings, adapter, state
             raise RuntimeError("secret exception must not escape")
         return original_restore(path, raw, mode, mtime_ns)
 
@@ -250,8 +267,66 @@ def test_compensation_failure_fails_closed_and_next_call_refuses(tmp_path, monke
     assert rc == 1 and receipt["reason"] == "recovery_failed"
     assert "secret" not in json.dumps(receipt)
     state = root / ".universal-docs/install-state.json"
-    assert not state.exists()
+    marker = root / ".universal-docs/recovery-marker.json"
+    assert not state.exists() and marker.exists()
+    marker_raw = marker.read_bytes()
+    marker_value = json.loads(marker_raw)
+    assert marker_value["state_sha256"] == product_cli._sha256(before[".universal-docs/install-state.json"][1])
     assert snapshot(root)["backups"] == before["backups"]
     monkeypatch.undo()
+    rc, receipt = call(root, "init", "--harness", "claude-code", "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply")
+    assert rc == 1 and receipt["reason"] == "recovery_required"
+    assert snapshot(root)["backups"] == before["backups"]
+    rc, receipt = call(root, "doctor")
+    assert rc == 1
+    state_check = next(check for check in receipt["checks"] if check["id"] == "install_state")
+    assert state_check["reason"] == "recovery_required"
     rc, receipt = call(root, "rollback", "--apply")
-    assert rc == 1 and receipt["reason"] in {"install_state_missing", "rollback_tombstone_invalid"}
+    assert rc == 1 and receipt["reason"] == "recovery_required"
+    assert marker.read_bytes() == marker_raw and not state.exists()
+
+
+def test_generated_adapter_removal_failure_restores_pre_call_topology(tmp_path, monkeypatch):
+    root = project(tmp_path, monkeypatch)
+    init_apply(root)
+    before = snapshot(root)
+    original_unlink = Path.unlink
+
+    def fail_adapter_unlink(path, *args, **kwargs):
+        if path == root / ".universal-docs/adapter.json":
+            raise OSError("generated adapter removal")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_adapter_unlink)
+    rc, receipt = call(root, "rollback", "--apply")
+    assert rc == 1 and receipt["reason"] == "rollback_failed"
+    assert snapshot(root) == before
+
+
+def test_new_settings_backup_survives_cleanup_failure_hash_bound(tmp_path, monkeypatch):
+    root = project(tmp_path, monkeypatch)
+    init_apply(root)
+    before = snapshot(root)
+    original_unlink = Path.unlink
+    original_write = product_cli._atomic_write
+
+    def fail_tombstone(path, raw):
+        if path == root / ".universal-docs/rollback-tombstone.json":
+            raise OSError("tombstone write")
+        return original_write(path, raw)
+
+    def fail_backup_cleanup(path, *args, **kwargs):
+        if path.name.startswith("settings-"):
+            raise OSError("backup cleanup")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_backup_cleanup)
+    monkeypatch.setattr(product_cli, "_atomic_write", fail_tombstone)
+    rc, receipt = call(root, "rollback", "--apply")
+    assert rc == 1 and receipt["reason"] == "recovery_failed"
+    assert snapshot(root)[".universal-docs/install-state.json"] == before[".universal-docs/install-state.json"]
+    settings_backups = [entry for entry in snapshot(root)["backups"] if entry[0].startswith(".universal-docs/backups/settings-")]
+    assert len(settings_backups) == 1
+    relative, raw, _mode, _mtime = settings_backups[0]
+    assert relative.endswith(product_cli._sha256(raw) + ".json")
+    assert json.loads(raw) == json.loads((root / ".claude/settings.json").read_bytes())

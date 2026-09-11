@@ -427,6 +427,7 @@ _INIT_ERROR_REASONS = {
     "init_invalid",
     "active_install_conflict",
     "install_state_invalid",
+    "recovery_required",
 }
 
 
@@ -585,6 +586,7 @@ def _validate_project_topology(root: Path) -> None:
         Path(".universal-docs/adapter.json"),
         Path(".universal-docs/install-state.json"),
         Path(".universal-docs/rollback-tombstone.json"),
+        Path(_RECOVERY_MARKER_RELATIVE_PATH),
         Path(".universal-docs/backups/_probe.json"),
         Path(".claude/settings.json"),
     ):
@@ -778,6 +780,8 @@ def _atomic_write(path: Path, raw: bytes) -> None:
 _STATE_SCHEMA = "universal-docs.install-state/v1"
 _STATE_RELATIVE_PATH = ".universal-docs/install-state.json"
 _TOMBSTONE_RELATIVE_PATH = ".universal-docs/rollback-tombstone.json"
+_RECOVERY_MARKER_RELATIVE_PATH = ".universal-docs/recovery-marker.json"
+_RECOVERY_REQUIRED_REASON = "recovery_required"
 _HASH_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
 
 
@@ -890,6 +894,53 @@ def _read_tombstone(root: Path) -> tuple[dict[str, Any] | None, bytes | None]:
     _state_hash(value["adapter_sha256"])
     _state_hash(value["preimage_sha256"], nullable=True)
     return value, raw
+
+
+def _read_recovery_marker(root: Path) -> tuple[dict[str, Any] | None, bytes | None]:
+    path = root / _RECOVERY_MARKER_RELATIVE_PATH
+    _validate_output_parent(root, path)
+    raw = _read_existing(path, missing=None, reason="recovery_marker_invalid")
+    if raw is None:
+        return None, None
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_pairs_no_duplicates,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
+        raise ValueError("recovery_marker_invalid") from None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "state_sha256", "adapter_sha256", "settings_sha256", "preimage_sha256"}
+        or value.get("schema") != "universal-docs.recovery-marker/v1"
+    ):
+        raise ValueError("recovery_marker_invalid")
+    try:
+        for key in ("state_sha256", "adapter_sha256", "settings_sha256"):
+            _state_hash(value[key])
+        _state_hash(value["preimage_sha256"], nullable=True)
+    except ValueError:
+        raise ValueError("recovery_marker_invalid") from None
+    return value, raw
+
+
+def _assert_no_recovery_marker(root: Path) -> None:
+    marker, _ = _read_recovery_marker(root)
+    if marker is not None:
+        raise ValueError(_RECOVERY_REQUIRED_REASON)
+
+
+def _recovery_marker_bytes(state_raw: bytes, state: dict[str, Any], settings_raw: bytes) -> bytes:
+    return _json_bytes(
+        {
+            "schema": "universal-docs.recovery-marker/v1",
+            "state_sha256": _sha256(state_raw),
+            "adapter_sha256": state["adapter"]["sha256"],
+            "settings_sha256": _sha256(settings_raw),
+            "preimage_sha256": state["adapter"]["preimage_sha256"],
+        }
+    )
 
 
 def _state_for(
@@ -1151,6 +1202,12 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
     except ValueError as exc:
         state, state_raw, state_status, state_reason = None, None, "fail", str(exc)
     try:
+        marker, _ = _read_recovery_marker(root)
+        if marker is not None:
+            state_status, state_reason = "fail", _RECOVERY_REQUIRED_REASON
+    except ValueError as exc:
+        marker, _, state_status, state_reason = None, None, "fail", str(exc)
+    try:
         tombstone, _ = _read_tombstone(root)
         if tombstone is not None and state is not None:
             state_status, state_reason = "fail", "rollback_tombstone_inconsistent"
@@ -1175,6 +1232,8 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
                 state_status, state_reason = "fail", "rollback_tombstone_invalid"
     except ValueError as exc:
         state_status, state_reason = "fail", str(exc)
+    if marker is not None:
+        state_status, state_reason = "fail", _RECOVERY_REQUIRED_REASON
     checks.append(
         _doctor_check(
             "install_state",
@@ -1341,6 +1400,7 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
 
 
 def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any], int]:
+    _assert_no_recovery_marker(root)
     plan = plan_dependency_changes(
         _safe_relative(args.before, root),
         _safe_relative(args.after, root),
@@ -1545,6 +1605,7 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
 
 def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
     _validate_project_topology(root)
+    _assert_no_recovery_marker(root)
     state, state_raw = _read_state(root)
     adapter_path, settings_path, state_path = (
         root / ".universal-docs/adapter.json",
@@ -1696,7 +1757,9 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
         state_path.stat(),
     )
     tombstone_path = root / _TOMBSTONE_RELATIVE_PATH
+    marker_path = root / _RECOVERY_MARKER_RELATIVE_PATH
     _validate_output_parent(root, tombstone_path)
+    _validate_output_parent(root, marker_path)
     tombstone_raw = _json_bytes(
         {
             "schema": "universal-docs.rollback-tombstone/v1",
@@ -1736,18 +1799,29 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
         recover(lambda: _restore_file(
             adapter_path, adapter_raw, stat.S_IMODE(old_adapter_stat.st_mode), old_adapter_stat.st_mtime_ns
         ))
-        recover(lambda: _restore_file(
-            state_path, state_raw, stat.S_IMODE(old_state_stat.st_mode), old_state_stat.st_mtime_ns
-        ))
+        state_restore_failed = False
+
+        def recover_state() -> None:
+            nonlocal recovery_failed, state_restore_failed
+            try:
+                _restore_file(state_path, state_raw, stat.S_IMODE(old_state_stat.st_mode), old_state_stat.st_mtime_ns)
+            except (OSError, RuntimeError, ValueError):
+                recovery_failed = True
+                state_restore_failed = True
+
+        recover_state()
         recover(lambda: _restore_file(
             tombstone_path, old_tombstone, 0o600 if old_tombstone is not None else None, None
         ))
         if created_backup:
             recover(lambda: current_settings_backup.unlink(missing_ok=True))
-        if recovery_failed:
-            # The state file is the activation marker; never leave it claiming
-            # hashes that may no longer describe the live files.
-            recover(lambda: state_path.unlink(missing_ok=True))
+        if state_restore_failed:
+            # State could not be restored; leave a tiny, validated quarantine marker
+            # so init cannot adopt any orphaned generated bytes as a new install.
+            assert state_raw is not None and settings_raw is not None
+            recover(lambda: _atomic_write(
+                marker_path, _recovery_marker_bytes(state_raw, state, settings_raw)
+            ))
         raise ValueError("recovery_failed" if recovery_failed else "rollback_failed") from None
     return receipt, 0
 
