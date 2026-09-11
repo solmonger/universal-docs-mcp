@@ -541,49 +541,65 @@ def test_checker_addendum_identical_imports_and_nested_descriptor_paths(tmp_path
     assert rejected.reason == "task_signal_invalid"
 
 
-def test_checker_addendum_cli_rejects_duplicate_task_but_repeats_source(tmp_path):
+def test_checker_addendum_cli_rejects_duplicate_task_bare_syntax(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    output = io.BytesIO()
+    code = product_cli.main(
+        [
+            "plan", "--project-root", str(tmp_path), "--before", str(before),
+            "--after", str(after), "--task", "first", "--task", "second",
+        ],
+        stdout=output,
+    )
+    assert code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--task=first", "--task=second"],
+        ["--task", "first", "--task=second"],
+        ["--package=rich", "--package", "other"],
+    ],
+)
+def test_checker_addendum_cli_rejects_duplicate_scalar_equals_syntax(tmp_path, extra):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    output = io.BytesIO()
+    code = product_cli.main(
+        [
+            "plan", "--project-root", str(tmp_path), "--before", str(before),
+            "--after", str(after), *extra,
+        ],
+        stdout=output,
+    )
+    assert code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
+
+
+def test_checker_addendum_cli_repeats_equals_form_source(tmp_path):
     before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
     (tmp_path / "app.py").write_text("import rich\nrich.print()\n")
     output = io.BytesIO()
     code = product_cli.main(
         [
-            "plan",
-            "--project-root",
-            str(tmp_path),
-            "--before",
-            str(before),
-            "--after",
-            str(after),
-            "--task",
-            "first",
-            "--task",
-            "second",
-        ],
-        stdout=output,
-    )
-    assert (
-        code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
-    )
-    output = io.BytesIO()
-    code = product_cli.main(
-        [
-            "plan",
-            "--project-root",
-            str(tmp_path),
-            "--before",
-            str(before),
-            "--after",
-            str(after),
-            "--task",
-            "x",
-            "--source",
-            "app.py",
-            "--source",
-            "app.py",
+            "plan", "--project-root", str(tmp_path), "--before", str(before),
+            "--after", str(after), "--task=x", "--source=app.py", "--source=app.py",
         ],
         stdout=output,
     )
     assert code == 0
+    for source_args in (
+        ["--source", "app.py", "--source", "app.py"],
+        ["--source=app.py", "--source", "app.py"],
+    ):
+        output = io.BytesIO()
+        code = product_cli.main(
+            [
+                "plan", "--project-root", str(tmp_path), "--before", str(before),
+                "--after", str(after), "--task=x", *source_args,
+            ],
+            stdout=output,
+        )
+        assert code == 0
 
 
 def test_source_paths_are_bounded_before_iteration(tmp_path):

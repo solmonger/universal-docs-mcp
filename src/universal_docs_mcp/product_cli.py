@@ -472,10 +472,10 @@ class _Parser(argparse.ArgumentParser):
 
 
 _DUPLICATE_GUARDED_OPTIONS: dict[str, set[str]] = {
-    "init": {"--project-root", "--before", "--after", "--harness", "--apply"},
+    "init": {"--project-root", "--before", "--after", "--harness", "--apply", "--package"},
     "doctor": {"--project-root"},
     "rollback": {"--project-root", "--apply"},
-    "plan": {"--project-root", "--before", "--after", "--task"},
+    "plan": {"--project-root", "--before", "--after", "--package", "--task"},
 }
 
 
@@ -487,8 +487,10 @@ def _guard_duplicate_options(raw_argv: list[Any]) -> str | None:
         return command
     counts = {option: 0 for option in guarded}
     for token in raw_argv[1:]:
-        if isinstance(token, str) and token in counts:
-            counts[token] += 1
+        if isinstance(token, str):
+            option = token.split("=", 1)[0]
+            if option in counts:
+                counts[option] += 1
     if any(count > 1 for count in counts.values()):
         raise ValueError("arguments_invalid")
     return command

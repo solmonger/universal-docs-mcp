@@ -92,6 +92,13 @@ def test_duplicate_guard_runs_before_parser_for_same_and_different_values(tmp_pa
         ["init", "--harness", "claude-code", "--project-root", root, "--before", "a", "--after", "b", "--after", "c"],
         ["init", "--harness", "claude-code", "--project-root", root, "--before", "a", "--after", "b", "--apply", "--apply"],
         ["init", "--harness", "claude-code", "--project-root", root, "--before", "a", "--before", "b", "--after", "c"],
+        ["doctor", "--project-root=" + root, "--project-root=" + root + "-other"],
+        ["rollback", "--project-root=" + root, "--project-root=" + root],
+        ["init", "--harness=claude-code", "--harness=claude-code", "--project-root", root, "--before", "a", "--after", "b"],
+        ["init", "--project-root=" + root, "--project-root=" + root, "--harness", "claude-code", "--before", "a", "--after", "b"],
+        ["init", "--before=a", "--before=b", "--harness", "claude-code", "--project-root", root, "--after", "c"],
+        ["init", "--after=a", "--after=b", "--harness", "claude-code", "--project-root", root, "--before", "c"],
+        ["init", "--package=one", "--package", "two", "--harness", "claude-code", "--project-root", root, "--before", "a", "--after", "b"],
     ]
     def parser_must_not_run():
         raise AssertionError("argparse ran before duplicate guard")

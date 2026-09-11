@@ -45,6 +45,17 @@ def test_dry_run_is_selected_and_writes_nothing(tmp_path: Path):
     assert outputs(tmp_path) == {"before/requirements.txt", "after/requirements.txt"}
 
 
+def test_duplicate_package_mixed_syntax_abstains_before_init(tmp_path: Path):
+    rc, receipt = call(tmp_path, "--package=demo", "--package", "other")
+    assert rc == 1
+    assert receipt == {
+        "schema": "universal-docs.init/v1",
+        "mode": "dry-run",
+        "status": "abstained",
+        "reason": "arguments_invalid",
+    }
+
+
 def test_clean_apply_readback_and_shell_quoting(tmp_path: Path):
     root = tmp_path / "project with spaces"
     rc, receipt = call(root, apply=True)
