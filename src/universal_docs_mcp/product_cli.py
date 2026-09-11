@@ -113,11 +113,22 @@ def _doctor_installation() -> dict[str, Any]:
         result["reason"] = "active_interpreter_missing"
         return result
     if raw_executable.is_symlink():
-        result["reason"] = "active_interpreter_symlink"
-        return result
-    if not stat.S_ISREG(executable_info.st_mode):
+        try:
+            resolved_executable = raw_executable.resolve(strict=True)
+            resolved_info = resolved_executable.stat()
+        except (OSError, RuntimeError, ValueError):
+            result["reason"] = "active_interpreter_invalid"
+            return result
+    else:
+        resolved_executable = raw_executable
+        resolved_info = executable_info
+    if not stat.S_ISREG(resolved_info.st_mode):
         result["reason"] = "active_interpreter_not_regular"
         return result
+    if not resolved_info.st_mode & 0o111:
+        result["reason"] = "active_interpreter_not_executable"
+        return result
+    # Keep the lexical parent: venv console scripts live beside the shim.
     scripts_dir = raw_executable.parent
     for name in names:
         script = scripts_dir / name
@@ -500,7 +511,7 @@ def _sha256(raw: bytes) -> str:
 def _installation_executable(name: str) -> Path:
     """Resolve a console script beside the running interpreter, never via PATH."""
     override = os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper())
-    return Path(override) if override else Path(sys.executable).resolve().parent / name
+    return Path(override) if override else Path(sys.executable).parent / name
 
 
 def _validate_executable(path: Path) -> Path:

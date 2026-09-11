@@ -226,25 +226,92 @@ def test_identity_checks_each_console_script_topology(
     assert str(tmp_path) not in json.dumps(result)
 
 
-@pytest.mark.parametrize("kind,expected", [("missing", "active_interpreter_missing"), ("symlink", "active_interpreter_symlink"), ("fifo", "active_interpreter_not_regular"), ("directory", "active_interpreter_not_regular")])
-def test_identity_rejects_active_interpreter_topology_without_path_leak(
+def test_identity_accepts_venv_interpreter_symlink_and_keeps_lexical_scripts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts, _, _, _ = _identity_fixture(tmp_path, monkeypatch)
+    lexical = scripts / "python"
+    lexical.unlink()
+    target = tmp_path / "python3.14"
+    target.write_text("#! /bin/sh\\n")
+    target.chmod(0o700)
+    lexical.symlink_to(target)
+    result = product_cli._doctor_installation()
+    assert result["status"] == "pass"
+    assert result["reason"] == "identity_match"
+    assert all(item["status"] == "pass" for item in result["scripts"].values())
+    assert str(tmp_path) not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "kind,expected",
+    [
+        ("missing", "active_interpreter_missing"),
+        ("dangling", "active_interpreter_invalid"),
+        ("cycle", "active_interpreter_invalid"),
+        ("fifo", "active_interpreter_not_regular"),
+        ("directory", "active_interpreter_not_regular"),
+        ("special", "active_interpreter_not_regular"),
+        ("non-executable", "active_interpreter_not_executable"),
+    ],
+)
+def test_identity_rejects_active_interpreter_target_matrix_without_path_leak(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, expected: str
 ) -> None:
     scripts, _, _, _ = _identity_fixture(tmp_path, monkeypatch)
     executable = scripts / "python"
+    executable.unlink()
+    special_target: Path | None = None
     if kind == "missing":
-        executable.unlink()
-    elif kind == "symlink":
-        executable.unlink()
-        executable.symlink_to(scripts / product_cli._HOOK_NAME)
+        pass
+    elif kind == "dangling":
+        executable.symlink_to(tmp_path / "missing-python")
+    elif kind == "cycle":
+        first = scripts / "python3.14"
+        first.symlink_to(executable)
+        executable.symlink_to(first)
     elif kind == "fifo":
-        executable.unlink()
         os.mkfifo(executable)
-    else:
-        executable.unlink()
+    elif kind == "directory":
         executable.mkdir()
+    elif kind == "special":
+        import socket
+
+        special_target = Path(f"/tmp/universal-docs-special-{os.getpid()}")
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.bind(str(special_target))
+        executable.symlink_to(special_target)
+    else:
+        target = tmp_path / "python3.14"
+        target.write_text("#! /bin/sh\\n")
+        target.chmod(0o600)
+        executable.symlink_to(target)
     result = product_cli._doctor_installation()
+    if kind == "special" and special_target is not None:
+        special_target.unlink(missing_ok=True)
     assert result["reason"] == expected and result["status"] == "fail"
+    assert str(tmp_path) not in json.dumps(result)
+
+
+def test_identity_accepts_venv_shaped_interpreter_chain_with_lexical_scripts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts, _, _, _ = _identity_fixture(tmp_path, monkeypatch)
+    lexical = scripts / "python"
+    lexical.unlink()
+    middle = scripts / "python3.14"
+    target = tmp_path / "real-python"
+    target.write_text("#! /bin/sh\\n")
+    target.chmod(0o700)
+    middle.symlink_to(target)
+    lexical.symlink_to(middle)
+    result = product_cli._doctor_installation()
+    assert result["status"] == "pass"
+    assert result["reason"] == "identity_match"
+    assert set(result["scripts"]) == {
+        product_cli._HOOK_NAME,
+        product_cli._PREFLIGHT_NAME,
+    }
     assert str(tmp_path) not in json.dumps(result)
 
 
