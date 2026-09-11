@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,6 @@ def test_visible_fixtures_have_no_oracle_or_api_stub_files_or_tokens():
         assert not list(fixture.rglob("oracle.py"))
         assert not list(fixture.rglob("versioned_api.py"))
         oracle = ROOT / case["oracle_file"]
-        token = checker.expected_api_token(oracle, case["id"]).encode()
         visible = [
             case["task"].encode(),
             *(
@@ -47,7 +47,33 @@ def test_visible_fixtures_have_no_oracle_or_api_stub_files_or_tokens():
                 if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
             ),
         ]
-        assert all(token not in data for data in visible)
+        variants = checker.expected_api_variants(checker.expected_api_token(oracle, case["id"]))
+        assert all(variant not in data for variant in variants for data in visible)
+
+
+def test_source_shaped_references_pass_each_external_oracle():
+    references = {
+        "pydantic-v1-to-v2-model-dump": '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada").model_dump()\nif __name__ == "__main__":\n    main()\n''',
+        "pydantic-v1-to-v2-validator": '''from pydantic import BaseModel, ValidationInfo, field_validator\nclass User(BaseModel):\n    name: str\n    @field_validator("name")\n    def normalize_name(cls, value, info: ValidationInfo):\n        assert info.config is not None\n        return value.strip()\ndef main():\n    return User(name=" Ada ").name\nif __name__ == "__main__":\n    main()\n''',
+        "sqlalchemy-14-to-2-execute": '''from sqlalchemy import create_engine, text\ndef main():\n    with create_engine("sqlite://").connect() as connection:\n        return connection.execute(text("select 1"))\nif __name__ == "__main__":\n    main()\n''',
+        "sqlalchemy-14-to-2-select": '''from sqlalchemy import column, select, table\nfoo = table("foo", column("id"))\ndef main():\n    return select(foo.c.id)\nif __name__ == "__main__":\n    main()\n''',
+        "rich-12-to-13-console": '''from rich.console import Console\ndef main():\n    Console().print("Hello", "World!")\nif __name__ == "__main__":\n    main()\n''',
+    }
+    for case_id, source in references.items():
+        manifest = json.loads((CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8"))
+        oracle = ROOT / manifest["oracle_file"]
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            (workspace / "app.py").write_text(source, encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(oracle), str(workspace)],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        assert result.returncode == 0, (case_id, result.stdout, result.stderr)
+        assert json.loads(result.stdout.splitlines()[-1])["status"] == "passed"
 
 
 def test_corpus_digest_is_deterministic():

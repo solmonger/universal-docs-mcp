@@ -137,6 +137,17 @@ def validate_expected_api(expected: str, case_id: str, failure_class: str) -> No
         fail(f"{case_id}: version-sensitive EXPECTED_API cannot be a placeholder token")
 
 
+def expected_api_variants(expected: str) -> set[bytes]:
+    """Return case/separator variants that must stay out of blind fixtures."""
+    words = [word for word in __import__("re").split(r"[_-]+", expected) if word]
+    joined = "".join(words)
+    separated = "-".join(words)
+    return {
+        value.encode("utf-8")
+        for value in {expected, expected.lower(), expected.upper(), joined, joined.lower(), separated}
+    }
+
+
 def fixture_files(fixture: Path, case_id: str) -> list[Path]:
     if not fixture.is_dir() or fixture.is_symlink():
         fail(f"{case_id}: fixture directory missing or unsafe")
@@ -187,8 +198,9 @@ def check_case(manifest_path: Path) -> tuple[dict[str, Any], list[Path], Path, s
     expected = expected_api_token(oracle, case_id)
     validate_expected_api(expected, case_id, case["expected_failure_class"])
     visible_data = [case["task"].encode(), *(path.read_bytes() for path in visible)]
-    if any(expected.encode() in data for data in visible_data):
-        fail(f"{case_id}: EXPECTED_API token leaks into task or visible workspace")
+    leaked = [variant for variant in expected_api_variants(expected) if any(variant in data for data in visible_data)]
+    if leaked:
+        fail(f"{case_id}: EXPECTED_API token or normalized variant leaks into task or visible workspace")
     with tempfile.TemporaryDirectory(prefix="version-guard-corpus-") as temporary:
         workspace = Path(temporary) / "workspace"
         import shutil

@@ -1,9 +1,10 @@
-"""Deliberately broken baseline; the replacement API is intentionally hidden."""
-import api_surface
+"""Synthetic fixture: terminal output uses a pre-target entry point."""
+from rich import legacy_output
 
 
 def main():
-    return api_surface.legacy_call()
+    return legacy_output("Hello", "World!")
+
 
 if __name__ == "__main__":
     main()
