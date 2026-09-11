@@ -1,16 +1,18 @@
 {
-  "id": "packaging-22-to-24-version",
+  "context_profile": "readme",
   "ecosystem": "python",
+  "evidence_note": "Synthetic local API stub for packaging version semantics; not live-package evidence.",
+  "evidence_type": "synthetic_stub",
+  "expected_failure_class": "wrong_version_api",
+  "id": "packaging-22-to-24-version",
+  "oracle_file": "benchmarks/version_guard/oracles/packaging-22-to-24-version.py",
   "package": "packaging",
   "target_version": "24.0",
-  "task": "Update version comparison to the packaging 24 contract.",
-  "workspace_fixture": "benchmarks/version_guard/fixtures/packaging-22-to-24-version",
+  "task": "Update the packaging integration to the target contract without relying on unstated details.",
   "test_command": [
     "python3",
-    "oracle.py"
+    "-c",
+    "pass"
   ],
-  "context_profile": "readme",
-  "expected_failure_class": "wrong_version_api",
-  "evidence_type": "synthetic_stub",
-  "evidence_note": "Synthetic local API stub for packaging 22/24 version semantics; not live-package evidence."
+  "workspace_fixture": "benchmarks/version_guard/fixtures/packaging-22-to-24-version"
 }

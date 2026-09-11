@@ -1,12 +1,9 @@
-"""Deliberately broken baseline for rich-12-to-13-console."""
-import versioned_api
+"""Deliberately broken baseline; the replacement API is intentionally hidden."""
+import api_surface
 
 
 def main():
-    getattr(versioned_api, 'ConsoleLegacy')()
+    return api_surface.legacy_call()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except AttributeError as exc:
-        raise RuntimeError("WRONG_VERSION_API:rich:13.7.1:ConsoleLegacy") from exc
+    main()

@@ -1,12 +1,9 @@
-"""Deliberately broken baseline for click-7-to-8-parameter."""
-import versioned_api
+"""Deliberately broken baseline; the replacement API is intentionally hidden."""
+import api_surface
 
 
 def main():
-    getattr(versioned_api, 'option')()
+    return api_surface.legacy_call()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except AttributeError as exc:
-        raise RuntimeError("WRONG_VERSION_API:click:8.1.7:option") from exc
+    main()

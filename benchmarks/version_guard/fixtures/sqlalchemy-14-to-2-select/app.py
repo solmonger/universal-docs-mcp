@@ -1,12 +1,9 @@
-"""Deliberately broken baseline for sqlalchemy-14-to-2-select."""
-import versioned_api
+"""Deliberately broken baseline; the replacement API is intentionally hidden."""
+import api_surface
 
 
 def main():
-    getattr(versioned_api, 'query')()
+    return api_surface.legacy_call()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except AttributeError as exc:
-        raise RuntimeError("WRONG_VERSION_API:sqlalchemy:2.0.29:query") from exc
+    main()

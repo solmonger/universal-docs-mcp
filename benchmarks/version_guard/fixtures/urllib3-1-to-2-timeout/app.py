@@ -1,12 +1,9 @@
-"""Deliberately broken baseline for urllib3-1-to-2-timeout."""
-import versioned_api
+"""Deliberately broken baseline; the replacement API is intentionally hidden."""
+import api_surface
 
 
 def main():
-    getattr(versioned_api, 'TimeoutLegacy')()
+    return api_surface.legacy_call()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except AttributeError as exc:
-        raise RuntimeError("WRONG_VERSION_API:urllib3:2.2.1:TimeoutLegacy") from exc
+    main()

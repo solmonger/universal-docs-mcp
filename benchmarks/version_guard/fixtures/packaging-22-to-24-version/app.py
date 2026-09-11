@@ -1,12 +1,9 @@
-"""Deliberately broken baseline for packaging-22-to-24-version."""
-import versioned_api
+"""Deliberately broken baseline; the replacement API is intentionally hidden."""
+import api_surface
 
 
 def main():
-    getattr(versioned_api, 'LegacyVersion')()
+    return api_surface.legacy_call()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except AttributeError as exc:
-        raise RuntimeError("WRONG_VERSION_API:packaging:24.0:LegacyVersion") from exc
+    main()
