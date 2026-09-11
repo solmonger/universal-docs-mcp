@@ -1679,6 +1679,12 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
             "live_sha256": _sha256(settings_raw or b""),
             "state_sha256": _sha256(state_raw or b""),
         },
+        "operations": [
+            "restore_adapter" if restore_raw is not None else "remove_adapter",
+            "remove_exact_universal_docs_hook",
+            "remove_install_state",
+            "write_tombstone_last",
+        ],
         "hook": {"command_sha256": state["hook"]["command_sha256"]},
         "body_omitted": True,
     }
@@ -1700,9 +1706,10 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
             "preimage_sha256": preimage_hash,
         }
     )
-    old_tombstone = _read_existing(
-        tombstone_path, missing=None, reason="rollback_tombstone_invalid"
-    )
+    # Validate any existing marker before the first rollback mutation; a corrupt
+    # marker is history we cannot safely replace or infer.
+    old_tombstone_value, old_tombstone = _read_tombstone(root)
+    del old_tombstone_value
     current_settings_backup = _backup_path(root, "settings", settings_raw)
     _validate_output_parent(root, current_settings_backup)
     created_backup = not current_settings_backup.exists()
@@ -1713,36 +1720,35 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
         state_path.unlink()
         _atomic_write(tombstone_path, tombstone_raw)
     except (OSError, RuntimeError, ValueError):
-        try:
-            _restore_file(
-                settings_path,
-                settings_raw,
-                stat.S_IMODE(old_settings_stat.st_mode),
-                old_settings_stat.st_mtime_ns,
-            )
-            _restore_file(
-                adapter_path,
-                adapter_raw,
-                stat.S_IMODE(old_adapter_stat.st_mode),
-                old_adapter_stat.st_mtime_ns,
-            )
-            _restore_file(
-                state_path,
-                state_raw,
-                stat.S_IMODE(old_state_stat.st_mode),
-                old_state_stat.st_mtime_ns,
-            )
-            _restore_file(
-                tombstone_path,
-                old_tombstone,
-                0o600 if old_tombstone is not None else None,
-                None,
-            )
-            if created_backup:
-                current_settings_backup.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise ValueError("rollback_failed") from None
+        recovery_failed = False
+
+        def recover(operation) -> None:
+            nonlocal recovery_failed
+            try:
+                operation()
+            except (OSError, RuntimeError, ValueError):
+                recovery_failed = True
+
+        # Do not let one failed compensation prevent the remaining safeguards.
+        recover(lambda: _restore_file(
+            settings_path, settings_raw, stat.S_IMODE(old_settings_stat.st_mode), old_settings_stat.st_mtime_ns
+        ))
+        recover(lambda: _restore_file(
+            adapter_path, adapter_raw, stat.S_IMODE(old_adapter_stat.st_mode), old_adapter_stat.st_mtime_ns
+        ))
+        recover(lambda: _restore_file(
+            state_path, state_raw, stat.S_IMODE(old_state_stat.st_mode), old_state_stat.st_mtime_ns
+        ))
+        recover(lambda: _restore_file(
+            tombstone_path, old_tombstone, 0o600 if old_tombstone is not None else None, None
+        ))
+        if created_backup:
+            recover(lambda: current_settings_backup.unlink(missing_ok=True))
+        if recovery_failed:
+            # The state file is the activation marker; never leave it claiming
+            # hashes that may no longer describe the live files.
+            recover(lambda: state_path.unlink(missing_ok=True))
+        raise ValueError("recovery_failed" if recovery_failed else "rollback_failed") from None
     return receipt, 0
 
 
