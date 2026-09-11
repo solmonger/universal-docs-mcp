@@ -3,8 +3,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import sys
 from pathlib import Path
+
+import pytest
 
 from universal_docs_mcp import product_cli
 
@@ -130,3 +133,120 @@ def test_first_run_real_hook_and_preflight_own_cache_write(tmp_path, monkeypatch
     assert names_before_repeat == {p.name for p in cache.iterdir()}
     assert len(out.getvalue()) <= product_cli.MAX_OUTPUT_BYTES
     assert str(home) not in out.getvalue().decode()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "fifo"])
+@pytest.mark.parametrize("name", sorted(product_cli._DOCTOR_CACHE_OWNED_NAMES))
+def test_each_owned_cache_entry_requires_regular_topology_and_never_touches_target(
+    tmp_path, monkeypatch, kind, name
+):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_bytes(b"untouched")
+    target = tmp_path / "target"
+    target.write_bytes(b"private cache body")
+    entry = cache / name
+    if kind == "symlink":
+        entry.symlink_to(target)
+    elif kind == "directory":
+        entry.mkdir()
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO unavailable")
+        os.mkfifo(entry)
+    info, status = _cache_call(cache, monkeypatch)
+    assert status == "fail"
+    assert info["reason"] == product_cli._DOCTOR_CACHE_UNSAFE_REASON
+    assert info["entries"]["validity"] == "topology_only"
+    assert sentinel.read_bytes() == b"untouched"
+    assert target.read_bytes() == b"private cache body"
+
+
+@pytest.mark.parametrize("name", sorted(product_cli._DOCTOR_CACHE_OWNED_NAMES))
+def test_owned_entry_stat_error_is_unknown_without_following_or_reading(tmp_path, monkeypatch, name):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    class Entry:
+        def __init__(self):
+            self.name = name
+
+        def stat(self, *, follow_symlinks):
+            assert follow_symlinks is False
+            raise PermissionError("secret path")
+
+    class Scan:
+        def __enter__(self):
+            return iter((Entry(),))
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setenv("UNIVERSAL_DOCS_CACHE_DIR", str(cache))
+    monkeypatch.setattr(product_cli.os, "scandir", lambda path: Scan())
+    info, status = product_cli._doctor_cache(Path("/unused"))
+    assert status == "unknown"
+    assert info["reason"] == product_cli._DOCTOR_CACHE_ENTRY_ERROR_REASON
+    assert "secret path" not in json.dumps(info)
+
+
+def test_scandir_root_error_is_bounded_and_path_safe(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setenv("UNIVERSAL_DOCS_CACHE_DIR", str(cache))
+    monkeypatch.setattr(product_cli.os, "scandir", lambda path: (_ for _ in ()).throw(PermissionError("private")))
+    info, status = product_cli._doctor_cache(Path("/unused"))
+    assert status == "unknown"
+    assert info["reason"] == "cache_entries_inaccessible"
+    assert "private" not in json.dumps(info)
+
+
+def test_oversized_encoded_name_is_counted_without_reading_entry(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    class Entry:
+        name = "x" * 256
+
+        def stat(self, *, follow_symlinks):
+            return type("Stat", (), {"st_mode": stat.S_IFREG | 0o600})()
+
+    class Scan:
+        def __enter__(self):
+            return iter((Entry(),))
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setenv("UNIVERSAL_DOCS_CACHE_DIR", str(cache))
+    monkeypatch.setattr(product_cli.os, "scandir", lambda path: Scan())
+    info, status = product_cli._doctor_cache(Path("/unused"))
+    assert status == "pass"
+    assert info["entries"]["oversized_names"] == 1
+
+
+def test_cache_entry_enumeration_is_capped_at_256(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+
+    class Entry:
+        def __init__(self, number):
+            self.name = f"unrelated-{number}"
+
+        def stat(self, *, follow_symlinks):
+            return type("Stat", (), {"st_mode": stat.S_IFREG | 0o600})()
+
+    class Scan:
+        def __enter__(self):
+            return iter(Entry(number) for number in range(257))
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setenv("UNIVERSAL_DOCS_CACHE_DIR", str(cache))
+    monkeypatch.setattr(product_cli.os, "scandir", lambda path: Scan())
+    info, status = product_cli._doctor_cache(Path("/unused"))
+    assert status == "pass"
+    assert info["entries"]["total"] == 256
+    assert info["entries"]["names_truncated"] is True

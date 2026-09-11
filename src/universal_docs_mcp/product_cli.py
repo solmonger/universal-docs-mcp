@@ -969,6 +969,11 @@ def _state_live_matches(
 
 _DOCTOR_CACHE_MAX_ENTRIES = 256
 _DOCTOR_CACHE_MAX_NAME_BYTES = 255
+# These are the only filesystem entries DocsCache owns.  Doctor deliberately
+# validates topology only; SQLite schema/content remains DocsCache's concern.
+_DOCTOR_CACHE_OWNED_NAMES = frozenset(("cache.db", "cache.db-wal", "cache.db-shm"))
+_DOCTOR_CACHE_UNSAFE_REASON = "cache_owned_entry_unsafe"
+_DOCTOR_CACHE_ENTRY_ERROR_REASON = "cache_owned_entry_unreadable"
 
 
 def _doctor_cache_metadata(scope: str, *, root_status: str, identity: str | None,
@@ -1017,21 +1022,30 @@ def _doctor_cache_entries(cache: Path) -> tuple[dict[str, Any], str]:
                     break
                 counts["total"] += 1
                 try:
-                    name_bytes = os.fsencode(entry.name)
+                    name = entry.name
+                    name_bytes = os.fsencode(name)
                     if len(name_bytes) > _DOCTOR_CACHE_MAX_NAME_BYTES:
                         counts["oversized_names"] += 1
                     mode = entry.stat(follow_symlinks=False).st_mode
-                except OSError:
+                except (OSError, UnicodeError, ValueError):
                     counts["unreadable"] += 1
+                    if entry.name in _DOCTOR_CACHE_OWNED_NAMES:
+                        return counts, "unreadable_owned"
                     continue
                 if stat.S_ISLNK(mode):
                     counts["symlink"] += 1
+                    unsafe = name in _DOCTOR_CACHE_OWNED_NAMES
                 elif stat.S_ISREG(mode):
                     counts["regular"] += 1
+                    unsafe = False
                 elif stat.S_ISDIR(mode):
                     counts["directory"] += 1
+                    unsafe = name in _DOCTOR_CACHE_OWNED_NAMES
                 else:
                     counts["special"] += 1
+                    unsafe = name in _DOCTOR_CACHE_OWNED_NAMES
+                if unsafe:
+                    return counts, "unsafe_owned"
     except (OSError, RuntimeError):
         return counts, "error"
     return counts, "ok"
@@ -1072,6 +1086,14 @@ def _doctor_cache(root: Path) -> tuple[dict[str, Any], str]:
         return _doctor_cache_metadata(scope, root_status=kind, identity=identity,
                                       available=False, reason=f"cache_root_{kind}"), "fail"
     entries, entry_status = _doctor_cache_entries(cache)
+    if entry_status == "unsafe_owned":
+        return _doctor_cache_metadata(scope, root_status="directory", identity=identity,
+                                      available=False, entries=entries,
+                                      reason=_DOCTOR_CACHE_UNSAFE_REASON), "fail"
+    if entry_status == "unreadable_owned":
+        return _doctor_cache_metadata(scope, root_status="directory", identity=identity,
+                                      available=False, entries=entries,
+                                      reason=_DOCTOR_CACHE_ENTRY_ERROR_REASON), "unknown"
     if entry_status != "ok":
         return _doctor_cache_metadata(scope, root_status="inaccessible", identity=identity,
                                       available=False, entries=entries,
@@ -1199,7 +1221,7 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
         _doctor_check(
             "cache_scope",
             cache_status,
-            "cache_owner_classified",
+            cache["reason"],
             scope=cache["scope"],
             identity=cache["identity"],
             available=cache["available"],
@@ -1281,7 +1303,7 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
         checks[cache_check_index] = _doctor_check(
             "cache_scope",
             cache_status,
-            "cache_owner_classified_after_probe",
+            cache["reason"],
             scope=cache["scope"],
             identity=cache["identity"],
             available=cache["available"],
