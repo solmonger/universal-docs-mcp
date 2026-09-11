@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,11 +22,12 @@ SCHEMA = "universal-docs.benchmark/v1"
 ARMS = ("control", "manual", "automatic")
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_CASES = 100
-MAX_CASE_KEYS = 12
+MAX_CASE_KEYS = 13
 MAX_STRING_BYTES = 16 * 1024
 MAX_ARGV_ITEMS = 32
 MAX_ARG_BYTES = 4 * 1024
 MAX_CONTEXT_BYTES = 64 * 1024
+MAX_ORACLE_BYTES = 64 * 1024
 MAX_FIXTURE_FILES = 256
 MAX_FIXTURE_FILE_BYTES = 256 * 1024
 MAX_FIXTURE_TOTAL_BYTES = 2 * 1024 * 1024
@@ -91,7 +93,7 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
     cases = []
     seen: set[str] = set()
     required = {"id", "ecosystem", "package", "target_version", "task", "workspace_fixture", "test_command"}
-    optional = {"context_files", "manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"}
+    optional = {"context_files", "manual_context_file", "automatic_context_file", "oracle_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"}
     for raw in manifest["cases"]:
         if not isinstance(raw, dict):
             raise BenchmarkError("each case must be an object")
@@ -118,7 +120,7 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
                 if arm not in ARMS:
                     raise BenchmarkError(f"case {case_id} context_files has unknown arm")
                 _bounded_string(value, f"case {case_id} {arm} context file")
-        for key in ("manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"):
+        for key in ("manual_context_file", "automatic_context_file", "oracle_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"):
             if key in raw:
                 _bounded_string(raw[key], f"case {case_id} {key}")
         cases.append(case)
@@ -188,6 +190,33 @@ def _context_info(path: Path | None) -> tuple[str | None, int]:
         raise BenchmarkError("context file exceeds bounded bytes")
     data = path.read_bytes()
     return _sha256(data), len(data)
+
+
+def _oracle_info(root: Path, value: str | None) -> tuple[Path | None, str | None, int]:
+    if value is None:
+        return None, None, 0
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise BenchmarkError("oracle_file must be relative")
+    candidate = root.resolve()
+    for component in relative.parts:
+        candidate /= component
+        try:
+            info = candidate.lstat()
+        except FileNotFoundError as exc:
+            raise BenchmarkError("oracle file not found") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise BenchmarkError("oracle file path contains a symlink")
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError as exc:
+        raise BenchmarkError("oracle file not found") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise BenchmarkError("oracle file must be a regular file")
+    if info.st_size > MAX_ORACLE_BYTES:
+        raise BenchmarkError("oracle file exceeds bounded bytes")
+    data = candidate.read_bytes()
+    return candidate, _sha256(data), len(data)
 
 
 def _run_bounded(
@@ -307,6 +336,7 @@ def run_case(
     if context is not None and not context.is_file():
         raise BenchmarkError(f"context file not found for {case['id']}")
     context_sha256, context_bytes = _context_info(context)
+    oracle, oracle_sha256, oracle_bytes = _oracle_info(manifest_root, case.get("oracle_file"))
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="version-guard-benchmark-") as temporary:
@@ -333,19 +363,42 @@ def run_case(
         test_status = "not_run"
         test_exit = None
         test_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
+        test_command = _argv(case["test_command"], "test_command")
         if agent_status == "passed":
             try:
-                test_output = _run_bounded(
-                    _argv(case["test_command"], "test_command"),
-                    cwd=workspace,
-                    env=_env(workspace),
-                    timeout=timeout_seconds,
-                )
+                if oracle is None:
+                    test_output = _run_bounded(
+                        test_command,
+                        cwd=workspace,
+                        env=_env(workspace),
+                        timeout=timeout_seconds,
+                    )
+                else:
+                    test_output = _run_bounded(
+                        [sys.executable, str(oracle), str(workspace)],
+                        cwd=workspace,
+                        env=_env(workspace),
+                        timeout=timeout_seconds,
+                    )
                 test_exit = test_output["returncode"]
                 test_status = test_output["status"]
             except (FileNotFoundError, OSError):
                 test_status = "error"
         after = _snapshot(workspace)
+        test_receipt = {
+            "command": (
+                ["python3", "<external-oracle>", "<workspace>"]
+                if oracle is not None
+                else [_safe_text(item) for item in test_command]
+            ),
+            "command_status": test_status,
+            "exit_code": test_exit,
+            "output_sha256": test_output["output_sha256"],
+            "output_bytes": test_output["output_bytes"],
+            "output_truncated": test_output["output_truncated"],
+        }
+        if oracle is not None:
+            test_receipt.update({"oracle_sha256": oracle_sha256, "oracle_bytes": oracle_bytes})
         result = {
             "id": case["id"],
             "arm": arm,
@@ -359,14 +412,7 @@ def run_case(
             "context_bytes": context_bytes,
             "workspace_diff_sha256": _diff_hash(before, after),
             "agent": {"status": agent_status, "exit_code": agent_exit, "error": agent_error},
-            "test": {
-                "command": [_safe_text(item) for item in case["test_command"]],
-                "command_status": test_status,
-                "exit_code": test_exit,
-                "output_sha256": test_output["output_sha256"],
-                "output_bytes": test_output["output_bytes"],
-                "output_truncated": test_output["output_truncated"],
-            },
+            "test": test_receipt,
             "elapsed_seconds": round(time.monotonic() - started, 6),
         }
         return result

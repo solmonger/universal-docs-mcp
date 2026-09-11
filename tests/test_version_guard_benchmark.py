@@ -246,6 +246,90 @@ def test_timed_out_process_is_cleaned_up(tmp_path):
         os.kill(pid, 0)
 
 
+
+
+def test_external_oracle_is_blind_and_receives_edited_workspace(tmp_path):
+    manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py", test_command=_command("raise SystemExit(99)"))
+    (fixture_root / "fixture" / "app.py").write_text("original = True\n")
+    oracle = tmp_path / "oracle.py"
+    oracle.write_text(
+        "import pathlib, sys\n"
+        "workspace = pathlib.Path(sys.argv[1])\n"
+        "ok = (not (workspace / 'oracle.py').exists() and "
+        "(workspace / 'app.py').read_text() == 'edited = True\\n')\n"
+        "(workspace / 'oracle_seen.txt').write_text(str(workspace))\n"
+        "raise SystemExit(0 if ok else 1)\n"
+    )
+    agent = _command("from pathlib import Path; Path('app.py').write_text('edited = True\\n')")
+    result = run_case(manifest["cases"][0], "automatic", fixture_root, tmp_path, agent)
+    assert result["test"]["command_status"] == "passed"
+    assert result["test"]["exit_code"] == 0
+    assert result["test"]["command"] == ["python3", "<external-oracle>", "<workspace>"]
+    assert result["test"]["oracle_bytes"] == oracle.stat().st_size
+    assert result["workspace_diff_sha256"] != benchmark._sha256(b"")
+
+
+def test_external_oracle_receipt_binds_hash_and_hides_path(tmp_path):
+    manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py")
+    oracle = tmp_path / "oracle.py"
+    oracle.write_text("raise SystemExit(0)\n")
+    result = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass"))
+    encoded = json.dumps(result)
+    assert result["test"]["oracle_sha256"] == hashlib.sha256(oracle.read_bytes()).hexdigest()
+    assert result["test"]["oracle_bytes"] == oracle.stat().st_size
+    assert str(tmp_path) not in encoded
+    assert "raise SystemExit" not in encoded
+    assert "oracle.py" not in encoded
+
+
+@pytest.mark.parametrize("oracle_setup, message", [
+    ("escape", "relative"),
+    ("missing", "not found"),
+    ("directory", "regular file"),
+    ("symlink", "symlink"),
+    ("symlink_parent", "symlink"),
+    ("oversized", "bounded bytes"),
+])
+def test_external_oracle_paths_are_rejected_before_agent(tmp_path, oracle_setup, message):
+    manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py")
+    outside = tmp_path / "outside.py"
+    outside.write_text("raise SystemExit(0)\n")
+    oracle = tmp_path / "oracle.py"
+    if oracle_setup == "escape":
+        manifest["cases"][0]["oracle_file"] = "../outside.py"
+    elif oracle_setup == "missing":
+        pass
+    elif oracle_setup == "directory":
+        oracle.mkdir()
+    elif oracle_setup == "symlink":
+        oracle.symlink_to(outside)
+    elif oracle_setup == "symlink_parent":
+        parent = tmp_path / "linked"
+        parent.symlink_to(tmp_path / "real", target_is_directory=True)
+        (tmp_path / "real").mkdir()
+        (tmp_path / "real" / "oracle.py").write_text("raise SystemExit(0)\n")
+        manifest["cases"][0]["oracle_file"] = "linked/oracle.py"
+    elif oracle_setup == "oversized":
+        oracle.write_bytes(b"x" * (benchmark.MAX_ORACLE_BYTES + 1))
+    marker = tmp_path / "agent-ran"
+    agent = _command(f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')")
+    with pytest.raises(BenchmarkError, match=message):
+        run_case(manifest["cases"][0], "control", fixture_root, tmp_path, agent)
+    assert not marker.exists()
+
+
+def test_legacy_test_command_receipt_and_behavior_are_unchanged(tmp_path):
+    manifest, fixture_root = _manifest(
+        tmp_path,
+        test_command=_command("from pathlib import Path; raise SystemExit(0 if Path('original.txt').exists() else 1)"),
+    )
+    result = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass"))
+    assert result["test"]["command"] == [benchmark._safe_text(item) for item in manifest["cases"][0]["test_command"]]
+    assert result["test"]["command_status"] == "passed"
+    assert "oracle_sha256" not in result["test"]
+    assert "oracle_bytes" not in result["test"]
+
+
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process-group proof")
 def test_normal_exit_kills_descendant_holding_stdout(tmp_path):
     manifest, fixture_root = _manifest(tmp_path)
