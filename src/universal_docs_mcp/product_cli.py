@@ -177,22 +177,49 @@ def _read_settings(path: Path) -> tuple[dict[str, Any], bytes | None]:
     return _parse_settings(raw), raw
 
 
-def _validate_backup(path: Path, preimage: bytes | None, *, kind: str) -> bytes | None:
+def _backup_path(root: Path, kind: str, preimage: bytes) -> Path:
+    return root / ".universal-docs" / "backups" / f"{kind}-{_sha256(preimage)}.json"
+
+
+def _validate_backup(path: Path, preimage: bytes, *, kind: str) -> None:
     raw = _read_existing(path, missing=None, reason=f"{kind}_backup_invalid")
-    if raw is None:
-        return None
-    if preimage is not None and raw != preimage:
+    if raw is not None and raw != preimage:
         raise ValueError("backup_conflict")
-    if kind == "settings":
-        _parse_settings(raw)
-    if kind == "adapter":
+
+
+def _write_backup(path: Path, raw: bytes, *, kind: str) -> None:
+    """Create a content-addressed backup without ever replacing one."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        _validate_backup(path, raw, kind=kind)
+        return
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
         try:
-            value = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-            raise ValueError("adapter_invalid") from None
-        if not isinstance(value, dict):
-            raise ValueError("adapter_invalid")
-    return raw
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _restore_file(path: Path, raw: bytes | None, mode: int | None, mtime_ns: int | None) -> None:
+    if raw is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    _atomic_write(path, raw)
+    if mode is not None:
+        os.chmod(path, mode)
+    if mtime_ns is not None:
+        os.utime(path, ns=(mtime_ns, mtime_ns))
 
 
 def _hook_command(hook: Path, adapter: Path) -> str:
@@ -290,8 +317,6 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
     request = to_preflight_request(plan)
     adapter_path = root / ".universal-docs" / "adapter.json"
     settings_path = root / ".claude" / "settings.json"
-    adapter_backup_path = root / ".universal-docs" / "adapter.json.backup"
-    settings_backup_path = root / ".universal-docs" / "settings.json.backup"
     _validate_output_parent(adapter_path)
     _validate_output_parent(settings_path)
     adapter = _json_bytes({"preflight_command": [str(preflight)], "request": request.model_dump(mode="json", exclude_none=True), "timeout_ms": 30_000})
@@ -305,31 +330,60 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
             raise ValueError("adapter_invalid") from None
         if not isinstance(value, dict):
             raise ValueError("adapter_invalid")
-    proposed, changed = _settings_with_hook(settings, command)
+    proposed, hook_added = _settings_with_hook(settings, command)
     settings_bytes = _json_bytes(proposed)
-    backups: list[dict[str, str]] = []
-    backup_writes: list[tuple[Path, bytes]] = []
-    existing_adapter_backup = _validate_backup(adapter_backup_path, old_adapter, kind="adapter")
-    existing_settings_backup = _validate_backup(settings_backup_path, old_settings, kind="settings")
-    if old_adapter is not None:
-        backups.append({"relative_path": ".universal-docs/adapter.json.backup", "sha256": _sha256(old_adapter)})
-        if existing_adapter_backup is None:
-            backup_writes.append((adapter_backup_path, old_adapter))
-    if old_settings is not None and changed:
-        backups.append({"relative_path": ".universal-docs/settings.json.backup", "sha256": _sha256(old_settings)})
-        if existing_settings_backup is None:
-            backup_writes.append((settings_backup_path, old_settings))
+    adapter_changed = old_adapter != adapter
+    settings_changed = hook_added and old_settings != settings_bytes
+    changed = adapter_changed or settings_changed
+    receipt["changed"] = changed
     receipt["hashes"] = {".universal-docs/adapter.json": _sha256(adapter), ".claude/settings.json": _sha256(settings_bytes)}
     receipt["hook_identity"].update({"command_sha256": _sha256(command.encode()), "command_template": shlex.join([str(hook), "--harness", "claude", "--config", ".universal-docs/adapter.json"])})
-    receipt["rollback"].update({"settings_changed": changed})
+    receipt["rollback"].update({
+        "settings_changed": settings_changed,
+        "adapter": {
+            "action": "restore_preimage" if old_adapter is not None else "remove_generated",
+            "relative_path": ".universal-docs/adapter.json",
+        },
+        "settings": {"action": "remove_universal_docs_hook"},
+    })
+
+    backups: list[dict[str, str]] = []
+    backup_writes: list[tuple[Path, bytes, str]] = []
+    if adapter_changed and old_adapter is not None:
+        path = _backup_path(root, "adapter", old_adapter)
+        _validate_backup(path, old_adapter, kind="adapter")
+        backups.append({"kind": "adapter", "relative_path": str(path.relative_to(root)), "sha256": _sha256(old_adapter)})
+        if not path.exists():
+            backup_writes.append((path, old_adapter, "adapter"))
+    if settings_changed and old_settings is not None:
+        path = _backup_path(root, "settings", old_settings)
+        _validate_backup(path, old_settings, kind="settings")
+        backups.append({"kind": "settings", "relative_path": str(path.relative_to(root)), "sha256": _sha256(old_settings)})
+        if not path.exists():
+            backup_writes.append((path, old_settings, "settings"))
     if backups:
         receipt["backups"] = backups
-    if args.apply:
-        for path, raw in backup_writes:
-            _atomic_write(path, raw)
-        _atomic_write(adapter_path, adapter)
-        if changed:
-            _atomic_write(settings_path, settings_bytes)
+
+    if args.apply and changed:
+        adapter_stat = adapter_path.stat() if old_adapter is not None else None
+        try:
+            for path, raw, kind in backup_writes:
+                _write_backup(path, raw, kind=kind)
+            if adapter_changed:
+                _atomic_write(adapter_path, adapter)
+            if settings_changed:
+                _atomic_write(settings_path, settings_bytes)
+        except (OSError, RuntimeError, ValueError):
+            try:
+                _restore_file(
+                    adapter_path,
+                    old_adapter,
+                    stat.S_IMODE(adapter_stat.st_mode) if adapter_stat else None,
+                    adapter_stat.st_mtime_ns if adapter_stat else None,
+                )
+            except (OSError, RuntimeError):
+                pass
+            raise ValueError("write_failed") from None
     return receipt, 0
 
 
