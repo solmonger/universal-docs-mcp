@@ -248,6 +248,23 @@ def test_timed_out_process_is_cleaned_up(tmp_path):
 
 
 
+def test_oracle_workspace_mutations_do_not_enter_agent_diff(tmp_path):
+    manifest, fixture_root = _manifest(tmp_path, test_command=_command("raise SystemExit(0)"))
+    oracle = tmp_path / "oracle.py"
+    oracle.write_text(
+        "import pathlib, sys\n"
+        "workspace = pathlib.Path(sys.argv[1])\n"
+        "(workspace / 'oracle_seen.txt').write_text('oracle mutation')\n"
+        "(workspace / 'original.txt').unlink()\n"
+    )
+    manifest["cases"][0]["oracle_file"] = "oracle.py"
+    agent = _command("from pathlib import Path; Path('agent.txt').write_text('agent change')")
+    with_oracle = run_case(manifest["cases"][0], "automatic", fixture_root, tmp_path, agent)
+    manifest["cases"][0].pop("oracle_file")
+    agent_only = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, agent)
+    assert with_oracle["workspace_diff_sha256"] == agent_only["workspace_diff_sha256"]
+
+
 def test_external_oracle_is_blind_and_receives_edited_workspace(tmp_path):
     manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py", test_command=_command("raise SystemExit(99)"))
     (fixture_root / "fixture" / "app.py").write_text("original = True\n")
@@ -267,6 +284,21 @@ def test_external_oracle_is_blind_and_receives_edited_workspace(tmp_path):
     assert result["test"]["command"] == ["python3", "<external-oracle>", "<workspace>"]
     assert result["test"]["oracle_bytes"] == oracle.stat().st_size
     assert result["workspace_diff_sha256"] != benchmark._sha256(b"")
+
+
+def test_oracle_execution_uses_pre_agent_snapshot(tmp_path):
+    manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py")
+    oracle = tmp_path / "oracle.py"
+    original = b"raise SystemExit(7)\n"
+    replacement = b"raise SystemExit(9)\n"
+    oracle.write_bytes(original)
+    agent = _command(f"from pathlib import Path; Path({str(oracle)!r}).write_bytes({replacement!r})")
+    result = run_case(manifest["cases"][0], "automatic", fixture_root, tmp_path, agent)
+    assert result["test"]["command_status"] == "failed"
+    assert result["test"]["exit_code"] == 7
+    assert result["test"]["oracle_sha256"] == hashlib.sha256(original).hexdigest()
+    assert result["test"]["oracle_bytes"] == len(original)
+    assert oracle.read_bytes() == replacement
 
 
 def test_external_oracle_receipt_binds_hash_and_hides_path(tmp_path):

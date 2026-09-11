@@ -192,9 +192,9 @@ def _context_info(path: Path | None) -> tuple[str | None, int]:
     return _sha256(data), len(data)
 
 
-def _oracle_info(root: Path, value: str | None) -> tuple[Path | None, str | None, int]:
+def _oracle_info(root: Path, value: str | None) -> tuple[Path | None, bytes | None, str | None, int]:
     if value is None:
-        return None, None, 0
+        return None, None, None, 0
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
         raise BenchmarkError("oracle_file must be relative")
@@ -216,7 +216,7 @@ def _oracle_info(root: Path, value: str | None) -> tuple[Path | None, str | None
     if info.st_size > MAX_ORACLE_BYTES:
         raise BenchmarkError("oracle file exceeds bounded bytes")
     data = candidate.read_bytes()
-    return candidate, _sha256(data), len(data)
+    return candidate, data, _sha256(data), len(data)
 
 
 def _run_bounded(
@@ -336,86 +336,93 @@ def run_case(
     if context is not None and not context.is_file():
         raise BenchmarkError(f"context file not found for {case['id']}")
     context_sha256, context_bytes = _context_info(context)
-    oracle, oracle_sha256, oracle_bytes = _oracle_info(manifest_root, case.get("oracle_file"))
+    oracle, oracle_data, oracle_sha256, oracle_bytes = _oracle_info(manifest_root, case.get("oracle_file"))
 
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="version-guard-benchmark-") as temporary:
-        workspace = Path(temporary) / "workspace"
-        shutil.copytree(fixture, workspace)
-        _write_inputs(workspace, case, context)
-        before = _snapshot(workspace)
-        agent_status = "passed"
-        agent_error = None
-        agent_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
-        try:
-            agent_output = _run_bounded(
-                agent_argv, cwd=workspace, env=_env(workspace), timeout=timeout_seconds
-            )
-            agent_exit = agent_output["returncode"]
-            agent_status = agent_output["status"]
-            if agent_status == "timeout":
-                agent_error = "agent_timeout"
-        except (FileNotFoundError, OSError):
-            agent_status = "error"
-            agent_exit = None
-            agent_error = "agent_not_executable"
-
-        test_status = "not_run"
-        test_exit = None
-        test_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
-        test_command = _argv(case["test_command"], "test_command")
-        if agent_status == "passed":
+    with tempfile.TemporaryDirectory(prefix="version-guard-oracle-") as oracle_private:
+        oracle_snapshot = None
+        if oracle_data is not None:
+            oracle_snapshot = Path(oracle_private) / "oracle.py"
+            oracle_snapshot.write_bytes(oracle_data)
+            oracle_snapshot.chmod(0o600)
+        with tempfile.TemporaryDirectory(prefix="version-guard-benchmark-") as temporary:
+            workspace = Path(temporary) / "workspace"
+            shutil.copytree(fixture, workspace)
+            _write_inputs(workspace, case, context)
+            before = _snapshot(workspace)
+            agent_status = "passed"
+            agent_error = None
+            agent_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
             try:
-                if oracle is None:
-                    test_output = _run_bounded(
-                        test_command,
-                        cwd=workspace,
-                        env=_env(workspace),
-                        timeout=timeout_seconds,
-                    )
-                else:
-                    test_output = _run_bounded(
-                        [sys.executable, str(oracle), str(workspace)],
-                        cwd=workspace,
-                        env=_env(workspace),
-                        timeout=timeout_seconds,
-                    )
-                test_exit = test_output["returncode"]
-                test_status = test_output["status"]
+                agent_output = _run_bounded(
+                    agent_argv, cwd=workspace, env=_env(workspace), timeout=timeout_seconds
+                )
+                agent_exit = agent_output["returncode"]
+                agent_status = agent_output["status"]
+                if agent_status == "timeout":
+                    agent_error = "agent_timeout"
             except (FileNotFoundError, OSError):
-                test_status = "error"
-        after = _snapshot(workspace)
-        test_receipt = {
-            "command": (
-                ["python3", "<external-oracle>", "<workspace>"]
-                if oracle is not None
-                else [_safe_text(item) for item in test_command]
-            ),
-            "command_status": test_status,
-            "exit_code": test_exit,
-            "output_sha256": test_output["output_sha256"],
-            "output_bytes": test_output["output_bytes"],
-            "output_truncated": test_output["output_truncated"],
-        }
-        if oracle is not None:
-            test_receipt.update({"oracle_sha256": oracle_sha256, "oracle_bytes": oracle_bytes})
-        result = {
-            "id": case["id"],
-            "arm": arm,
-            "ecosystem": case["ecosystem"],
-            "package": case["package"],
-            "target_version": case["target_version"],
-            "provider": provider,
-            "model": model,
-            "generation_id": generation_id,
-            "context_sha256": context_sha256,
-            "context_bytes": context_bytes,
-            "workspace_diff_sha256": _diff_hash(before, after),
-            "agent": {"status": agent_status, "exit_code": agent_exit, "error": agent_error},
-            "test": test_receipt,
-            "elapsed_seconds": round(time.monotonic() - started, 6),
-        }
-        return result
+                agent_status = "error"
+                agent_exit = None
+                agent_error = "agent_not_executable"
+
+            # Capture only agent mutations before running an untrusted oracle/test.
+            after = _snapshot(workspace)
+            test_status = "not_run"
+            test_exit = None
+            test_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
+            test_command = _argv(case["test_command"], "test_command")
+            if agent_status == "passed":
+                try:
+                    if oracle_snapshot is None:
+                        test_output = _run_bounded(
+                            test_command,
+                            cwd=workspace,
+                            env=_env(workspace),
+                            timeout=timeout_seconds,
+                        )
+                    else:
+                        test_output = _run_bounded(
+                            [sys.executable, str(oracle_snapshot), str(workspace)],
+                            cwd=workspace,
+                            env=_env(workspace),
+                            timeout=timeout_seconds,
+                        )
+                    test_exit = test_output["returncode"]
+                    test_status = test_output["status"]
+                except (FileNotFoundError, OSError):
+                    test_status = "error"
+            test_receipt = {
+                "command": (
+                    ["python3", "<external-oracle>", "<workspace>"]
+                    if oracle is not None
+                    else [_safe_text(item) for item in test_command]
+                ),
+                "command_status": test_status,
+                "exit_code": test_exit,
+                "output_sha256": test_output["output_sha256"],
+                "output_bytes": test_output["output_bytes"],
+                "output_truncated": test_output["output_truncated"],
+            }
+            if oracle is not None:
+                test_receipt.update({"oracle_sha256": oracle_sha256, "oracle_bytes": oracle_bytes})
+            result = {
+                "id": case["id"],
+                "arm": arm,
+                "ecosystem": case["ecosystem"],
+                "package": case["package"],
+                "target_version": case["target_version"],
+                "provider": provider,
+                "model": model,
+                "generation_id": generation_id,
+                "context_sha256": context_sha256,
+                "context_bytes": context_bytes,
+                "workspace_diff_sha256": _diff_hash(before, after),
+                "agent": {"status": agent_status, "exit_code": agent_exit, "error": agent_error},
+                "test": test_receipt,
+                "elapsed_seconds": round(time.monotonic() - started, 6),
+            }
+            return result
 
 
 def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
