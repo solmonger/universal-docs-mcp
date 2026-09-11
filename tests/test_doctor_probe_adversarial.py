@@ -215,7 +215,8 @@ def test_success_metadata_is_source_bearing_and_receipt_safe(tmp_path: Path, mon
     script = _hook(tmp_path / "env", f"open({str(env_capture)!r}, 'w').write(json.dumps(dict(os.environ)))")
     product_cli._doctor_probe(script, _adapter(tmp_path / "env"), REQUEST)
     env = json.loads(env_capture.read_text())
-    assert env.get("HOME") is None and env.get("PYTHONPATH") is None
+    assert env.get("HOME") == "/personal/scratch-home"
+    assert env.get("PYTHONPATH") is None
     assert env.get("OPENAI_API_KEY") is None
 
 

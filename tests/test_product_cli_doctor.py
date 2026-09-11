@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ def fixture(
     package="demo",
     version="1.0.1",
     hook_script: str | None = None,
+    preflight_script: str | None = None,
 ) -> Path:
     root = tmp_path / "project"
     (root / "before").mkdir(parents=True)
@@ -38,7 +40,9 @@ def fixture(
     answer = tmp_path / "answer.json"
     answer.write_text(json.dumps(response(package, version)))
     preflight = tmp_path / "preflight"
-    preflight.write_text(f"#!/bin/sh\ncat {answer}\n")
+    preflight.write_text(
+        preflight_script if preflight_script is not None else f"#!/bin/sh\ncat {answer}\n"
+    )
     hook = tmp_path / "hook"
     marker = tmp_path / "command-hook-module-path.txt"
     hook.write_text(
@@ -81,6 +85,91 @@ def test_real_hook_source_bearing_fixture_omits_body(tmp_path, monkeypatch):
     )
     assert str(SOURCE_ROOT) not in json.dumps(receipt)
     assert "Real fixture documentation" not in json.dumps(receipt)
+
+
+def test_doctor_probe_propagates_only_isolated_home_through_real_chain(
+    tmp_path, monkeypatch
+):
+    marker = tmp_path / "child-environment.json"
+    answer = tmp_path / "answer.json"
+    answer.write_text(json.dumps(response()))
+    preflight_script = (
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(marker)!r}).write_text(json.dumps(dict(os.environ)))\n"
+        f"print(pathlib.Path({str(answer)!r}).read_text(), end='')\n"
+    )
+    root = fixture(tmp_path, monkeypatch, preflight_script=preflight_script)
+    isolated_home = tmp_path / "isolated-home"
+    isolated_home.mkdir()
+    default_sentinel = os.environ.get("HOME")
+    monkeypatch.setenv("HOME", str(isolated_home))
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "PYTHONPATH",
+    ):
+        monkeypatch.setenv(key, "sentinel")
+    monkeypatch.setattr(
+        product_cli,
+        "_doctor_installation",
+        lambda: {
+            "status": "pass",
+            "reason": "identity_match",
+            "module_path": "/installed/universal_docs_mcp/__init__.py",
+            "installed_version": "0.4.0rc2",
+            "executable": "/installed/bin/python",
+        },
+    )
+
+    rc, receipt = call(root)
+
+    assert rc == 0
+    assert receipt["source_probe"]["probe_mode"] == "installed_hook"
+    child_environment = json.loads(marker.read_text())
+    assert child_environment["HOME"] == str(isolated_home)
+    assert child_environment["HOME"] != default_sentinel
+    assert set(child_environment) - {"HOME", "PATH", "PYTHONIOENCODING"} <= {
+        "LC_CTYPE",
+        "__CF_USER_TEXT_ENCODING",
+    }
+
+
+def test_doctor_probe_does_not_cross_invalid_home_values(tmp_path, monkeypatch):
+    marker = tmp_path / "invalid-child-environment.json"
+    answer = tmp_path / "answer.json"
+    answer.write_text(json.dumps(response()))
+    preflight_script = (
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(marker)!r}).write_text(json.dumps(dict(os.environ)))\n"
+        f"print(pathlib.Path({str(answer)!r}).read_text(), end='')\n"
+    )
+    root = fixture(tmp_path, monkeypatch, preflight_script=preflight_script)
+    monkeypatch.setattr(
+        product_cli,
+        "_doctor_installation",
+        lambda: {
+            "status": "pass",
+            "reason": "identity_match",
+            "module_path": "/installed/universal_docs_mcp/__init__.py",
+            "installed_version": "0.4.0rc2",
+            "executable": "/installed/bin/python",
+        },
+    )
+    hook = Path(os.environ["UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_COMMAND_HOOK"])
+    adapter = root / ".universal-docs/adapter.json"
+    request = json.loads(adapter.read_text())["request"]
+    for invalid_home in ("relative-home", "", "bad\x00home"):
+        monkeypatch.setattr(product_cli.os, "environ", {"HOME": invalid_home})
+        meta, reason = product_cli._doctor_probe(hook, adapter, request)
+        assert reason == "source_bearing"
+        assert meta["probe_mode"] == "installed_hook"
+        assert "HOME" not in json.loads(marker.read_text())
 
 
 def test_doctor_receipt_rejects_untrusted_block_text(tmp_path, monkeypatch):

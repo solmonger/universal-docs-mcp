@@ -227,6 +227,15 @@ def _doctor_probe(
             return {}, "probe_malformed"
         command = [str(hook), "--harness", "claude", "--config", str(adapter)]
         timeout = min(max(config.timeout_ms / 1000.0, 0.1), 5.0)
+        env = {"PATH": "/usr/bin:/bin", "PYTHONIOENCODING": "utf-8"}
+        parent_home = os.environ.get("HOME")
+        if (
+            isinstance(parent_home, str)
+            and parent_home
+            and os.path.isabs(parent_home)
+            and "\x00" not in parent_home
+        ):
+            env["HOME"] = parent_home
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -234,7 +243,7 @@ def _doctor_probe(
             stderr=subprocess.PIPE,
             start_new_session=True,
             close_fds=True,
-            env={"PATH": "/usr/bin:/bin", "PYTHONIOENCODING": "utf-8"},
+            env=env,
         )
         stdout, stderr = bytearray(), bytearray()
         selector = selectors.DefaultSelector()
