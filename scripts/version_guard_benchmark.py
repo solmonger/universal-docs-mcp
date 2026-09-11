@@ -298,7 +298,6 @@ def _env(workspace: Path) -> dict[str, str]:
 
 def _write_inputs(workspace: Path, case: dict[str, Any], context: Path | None) -> None:
     metadata = {
-        "id": case["id"],
         "ecosystem": case["ecosystem"],
         "package": case["package"],
         "target_version": case["target_version"],
