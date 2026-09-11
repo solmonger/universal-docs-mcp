@@ -1,0 +1,99 @@
+{
+  "cases": [
+    {
+      "context_profile": "readme",
+      "ecosystem": "python",
+      "evidence_note": "Synthetic local API stub for pydantic version semantics; not live-package evidence.",
+      "evidence_type": "synthetic_stub",
+      "expected_failure_class": "wrong_version_api",
+      "id": "pydantic-v1-to-v2-model-dump",
+      "manual_context_file": "contexts/pydantic-2.6.1-model-methods.txt",
+      "oracle_file": "oracles/pydantic-v1-to-v2-model-dump.py",
+      "package": "pydantic",
+      "target_version": "2.6.1",
+      "task": "Update the pydantic integration to the target contract without relying on unstated details.",
+      "test_command": [
+        "python3",
+        "-c",
+        "pass"
+      ],
+      "workspace_fixture": "benchmarks/version_guard/fixtures/pydantic-v1-to-v2-model-dump"
+    },
+    {
+      "context_profile": "readme",
+      "ecosystem": "python",
+      "evidence_note": "Synthetic local API stub for pydantic version semantics; not live-package evidence.",
+      "evidence_type": "synthetic_stub",
+      "expected_failure_class": "wrong_version_api",
+      "id": "pydantic-v1-to-v2-validator",
+      "manual_context_file": "contexts/pydantic-2.6.1-validators.txt",
+      "oracle_file": "oracles/pydantic-v1-to-v2-validator.py",
+      "package": "pydantic",
+      "target_version": "2.6.1",
+      "task": "Update the pydantic integration to the target contract without relying on unstated details.",
+      "test_command": [
+        "python3",
+        "-c",
+        "pass"
+      ],
+      "workspace_fixture": "benchmarks/version_guard/fixtures/pydantic-v1-to-v2-validator"
+    },
+    {
+      "context_profile": "readme",
+      "ecosystem": "python",
+      "evidence_note": "Synthetic local API stub for sqlalchemy version semantics; not live-package evidence.",
+      "evidence_type": "synthetic_stub",
+      "expected_failure_class": "wrong_version_api",
+      "id": "sqlalchemy-14-to-2-execute",
+      "manual_context_file": "contexts/sqlalchemy-2.0.29-execute.txt",
+      "oracle_file": "oracles/sqlalchemy-14-to-2-execute.py",
+      "package": "sqlalchemy",
+      "target_version": "2.0.29",
+      "task": "Update the sqlalchemy integration to the target contract without relying on unstated details.",
+      "test_command": [
+        "python3",
+        "-c",
+        "pass"
+      ],
+      "workspace_fixture": "benchmarks/version_guard/fixtures/sqlalchemy-14-to-2-execute"
+    },
+    {
+      "context_profile": "readme",
+      "ecosystem": "python",
+      "evidence_note": "Synthetic local API stub for sqlalchemy version semantics; not live-package evidence.",
+      "evidence_type": "synthetic_stub",
+      "expected_failure_class": "wrong_version_api",
+      "id": "sqlalchemy-14-to-2-select",
+      "manual_context_file": "contexts/sqlalchemy-2.0.29-select.txt",
+      "oracle_file": "oracles/sqlalchemy-14-to-2-select.py",
+      "package": "sqlalchemy",
+      "target_version": "2.0.29",
+      "task": "Update the sqlalchemy integration to the target contract without relying on unstated details.",
+      "test_command": [
+        "python3",
+        "-c",
+        "pass"
+      ],
+      "workspace_fixture": "benchmarks/version_guard/fixtures/sqlalchemy-14-to-2-select"
+    },
+    {
+      "context_profile": "readme",
+      "ecosystem": "python",
+      "evidence_note": "Synthetic local API stub for rich version semantics; not live-package evidence.",
+      "evidence_type": "synthetic_stub",
+      "expected_failure_class": "wrong_version_api",
+      "id": "rich-12-to-13-console",
+      "manual_context_file": "contexts/rich-13.7.1-console.txt",
+      "oracle_file": "oracles/rich-12-to-13-console.py",
+      "package": "rich",
+      "target_version": "13.7.1",
+      "task": "Update the rich integration to the target contract without relying on unstated details.",
+      "test_command": [
+        "python3",
+        "-c",
+        "pass"
+      ],
+      "workspace_fixture": "benchmarks/version_guard/fixtures/rich-12-to-13-console"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Version Guard pilot
 
-Status: ready for implementation
+Status: Gate A passed; Slice 04 ready
 Last updated: 2026-09-10
 Base candidate: `27789d88bddd08c2109b4faaff59dd842bebcfa7` / `0.4.0rc2`
 
@@ -10,9 +10,9 @@ You are implementing exactly one slice of the Version Guard pilot from the froze
 
 Global TODO:
 
-- [ ] Slice 01 — benchmark harness and executable oracles
-- [ ] Slice 02 — version-sensitive fixture corpus
-- [ ] Slice 03 — manual-context upper-bound run and source-profile decision
+- [x] Slice 01 — benchmark harness and executable oracles
+- [x] Slice 02 — version-sensitive fixture corpus
+- [x] Slice 03 — manual-context upper-bound run and source-profile decision
 - [ ] Slice 04 — deterministic Python dependency-change planner
 - [ ] Slice 05 — one-command `init` and `doctor`
 - [ ] Slice 06 — isolated active-process dogfood

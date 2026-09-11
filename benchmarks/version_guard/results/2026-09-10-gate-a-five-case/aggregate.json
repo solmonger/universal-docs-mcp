@@ -1,0 +1,159 @@
+{
+  "adapter_sha256": "38a4129151d9c1392544dd999a69e53256be67383ea2d005cf074a35d1373599",
+  "candidate_commit": "2e5898a5b1efa646fe78a305e10d3bc7330de221",
+  "candidate_tree": "9f0f5706d1485c676a1f58f46e507a6c506d5bb8",
+  "contexts": [
+    {
+      "bytes": 667,
+      "id": "pydantic-v1-to-v2-model-dump",
+      "package": "pydantic",
+      "sha256": "a7b70ba26ef704ab7f524b544b3074748909855ed60126133d053e511dcd3e84",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.6.1"
+    },
+    {
+      "bytes": 740,
+      "id": "pydantic-v1-to-v2-validator",
+      "package": "pydantic",
+      "sha256": "3ac90dc55b6e11abf66c587d20896825bab67cc1de0a76b613c3fccd3ffb6b67",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.6.1"
+    },
+    {
+      "bytes": 689,
+      "id": "sqlalchemy-14-to-2-execute",
+      "package": "sqlalchemy",
+      "sha256": "6c886103c7f58dd0d45e82bf4bd955f4ad2c2d87021417e27726d76aa2783b72",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.0.29"
+    },
+    {
+      "bytes": 611,
+      "id": "sqlalchemy-14-to-2-select",
+      "package": "sqlalchemy",
+      "sha256": "a0fe7b9a4236c1bdf9ed5c7d7860f1a9e8ae281b29fd4b2ce2793957d714669b",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.0.29"
+    },
+    {
+      "bytes": 543,
+      "id": "rich-12-to-13-console",
+      "package": "rich",
+      "sha256": "681ec89871b68340e0f716fc137105ef9fe82896ef1e6af551c9a32b868b2ee1",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "13.7.1"
+    }
+  ],
+  "errors": 0,
+  "evidence_class": "synthetic blind behavioral fixtures; mechanistic upper-bound evidence, not real-package or external-user evidence",
+  "execution_environment": {
+    "os": "Darwin 25.6.0 arm64",
+    "python": "3.14.7"
+  },
+  "limitations": [
+    "Nested Hermes usage receipts were not persisted per turn; provider/model are command-bound and report-recorded, not independently reconciled for all 20 turns.",
+    "Five task types were repeated twice; task breadth is five, trial count is ten.",
+    "Synthetic stubs validate context lift under blind behavioral oracles but do not establish real dependency interaction."
+  ],
+  "manifest_sha256": "5a69759dad834c8c4167db069d1faed529cfb657be046120c15575cf1109918d",
+  "manual_median_change_pct": 2.4505057103821892,
+  "medians_seconds": {
+    "control": 24.7260595,
+    "manual": 25.331972999999998
+  },
+  "model_reported": "gpt-5.6-luna",
+  "paired_trials": 10,
+  "pairs": [
+    {
+      "control_passed": true,
+      "id": "pydantic-v1-to-v2-model-dump",
+      "manual_passed": true,
+      "repeat": 1,
+      "transition": "ceiling"
+    },
+    {
+      "control_passed": false,
+      "id": "pydantic-v1-to-v2-validator",
+      "manual_passed": false,
+      "repeat": 1,
+      "transition": "unchanged_failure"
+    },
+    {
+      "control_passed": false,
+      "id": "rich-12-to-13-console",
+      "manual_passed": true,
+      "repeat": 1,
+      "transition": "flip"
+    },
+    {
+      "control_passed": true,
+      "id": "sqlalchemy-14-to-2-execute",
+      "manual_passed": true,
+      "repeat": 1,
+      "transition": "ceiling"
+    },
+    {
+      "control_passed": false,
+      "id": "sqlalchemy-14-to-2-select",
+      "manual_passed": true,
+      "repeat": 1,
+      "transition": "flip"
+    },
+    {
+      "control_passed": true,
+      "id": "pydantic-v1-to-v2-model-dump",
+      "manual_passed": true,
+      "repeat": 2,
+      "transition": "ceiling"
+    },
+    {
+      "control_passed": false,
+      "id": "pydantic-v1-to-v2-validator",
+      "manual_passed": false,
+      "repeat": 2,
+      "transition": "unchanged_failure"
+    },
+    {
+      "control_passed": false,
+      "id": "rich-12-to-13-console",
+      "manual_passed": true,
+      "repeat": 2,
+      "transition": "flip"
+    },
+    {
+      "control_passed": true,
+      "id": "sqlalchemy-14-to-2-execute",
+      "manual_passed": true,
+      "repeat": 2,
+      "transition": "ceiling"
+    },
+    {
+      "control_passed": false,
+      "id": "sqlalchemy-14-to-2-select",
+      "manual_passed": true,
+      "repeat": 2,
+      "transition": "flip"
+    }
+  ],
+  "pass_predicate": {
+    "actual_regressions": 0,
+    "actual_success_lift": 4,
+    "maximum_regressions": 1,
+    "passed": true,
+    "required_success_lift": 3
+  },
+  "positive_flips": 4,
+  "provider_reported": "openai-codex",
+  "ran_at_utc": "2026-09-11T03:20:35Z",
+  "regressions": 0,
+  "result_rows": 20,
+  "schema": "universal-docs.gate-a/v1",
+  "source_profile_decision": "Use bounded official exact-tag migration/API excerpts; README/registry descriptions are sufficient for some quickstarts (for example Rich) but omit required migration symbols for Pydantic and SQLAlchemy.",
+  "status": "pass",
+  "success_lift": 4,
+  "successes": {
+    "control": 4,
+    "manual": 8
+  },
+  "timeouts": 0
+}
