@@ -12,10 +12,13 @@ EXPECTED_API = "model_dump"
 
 
 class _BaseModel:
+    model_dump_calls = 0
+
     def __init__(self, **values):
         self.__dict__.update(values)
 
     def model_dump(self):
+        _BaseModel.model_dump_calls += 1
         return dict(self.__dict__)
 
 
@@ -23,12 +26,14 @@ def _run(workspace: str) -> None:
     module = types.ModuleType("pydantic")
     module.BaseModel = _BaseModel
     sys.modules["pydantic"] = module
-    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="__main__")
+    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="_version_guard_app")
     model = result.get("User")
-    if model is None or not callable(getattr(model, EXPECTED_API, None)):
-        raise AttributeError("documented model method was not defined")
-    if model(name="Ada").model_dump() != {"name": "Ada"}:
-        raise AssertionError("model serialization contract failed")
+    app_main = result.get("main")
+    if model is None or not callable(app_main):
+        raise AttributeError("documented model integration was not defined")
+    output = app_main()
+    if _BaseModel.model_dump_calls != 1 or output != {"name": "Ada"}:
+        raise AttributeError("application did not call model_dump exactly once")
 
 
 def main() -> int:

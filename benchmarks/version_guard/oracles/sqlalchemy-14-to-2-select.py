@@ -22,7 +22,12 @@ class _Table:
         self.c = types.SimpleNamespace(**{column.name: column for column in columns})
 
 
+_SELECT_CALLS = 0
+
+
 def _select(*columns):
+    global _SELECT_CALLS
+    _SELECT_CALLS += 1
     if len(columns) == 1 and isinstance(columns[0], list):
         raise TypeError("select() takes column expressions positionally")
     if not columns or not all(isinstance(column, _Column) for column in columns):
@@ -36,9 +41,12 @@ def _run(workspace: str) -> None:
     module.table = _Table
     module.select = _select
     sys.modules["sqlalchemy"] = module
-    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="__main__")
-    if result.get("main", lambda: None)() != ("select", ("id",)):
-        raise TypeError("select contract was not used")
+    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="_version_guard_app")
+    app_main = result.get("main")
+    if not callable(app_main):
+        raise AttributeError("documented application entry point was not defined")
+    if _SELECT_CALLS != 0 or app_main() != ("select", ("id",)) or _SELECT_CALLS != 1:
+        raise TypeError("select contract was not used exactly once by the application")
 
 
 def main() -> int:

@@ -13,12 +13,14 @@ EXPECTED_API = "Console"
 
 class _Console:
     instances = []
+    print_calls = 0
 
     def __init__(self):
         self.messages = []
         self.instances.append(self)
 
     def print(self, *values):
+        type(self).print_calls += 1
         self.messages.append(" ".join(str(value) for value in values))
 
 
@@ -29,11 +31,15 @@ def _run(workspace: str) -> None:
     root.console = console_module
     sys.modules["rich"] = root
     sys.modules["rich.console"] = console_module
-    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="__main__")
+    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="_version_guard_app")
+    app_main = result.get("main")
+    if not callable(app_main):
+        raise AttributeError("documented console integration was not defined")
+    output = app_main()
     console_class = console_module.Console
-    if not callable(getattr(console_module, EXPECTED_API, None)) or not console_class.instances or console_class.instances[-1].messages != ["Hello World!"]:
-        raise AssertionError("console contract failed")
-    if result.get("main", lambda: None)() is not None:
+    if _Console.print_calls != 1 or not console_class.instances or console_class.instances[-1].messages != ["Hello World!"]:
+        raise AttributeError("application did not call Console.print exactly once")
+    if output is not None:
         raise AssertionError("fixture should write through the console")
 
 

@@ -83,6 +83,39 @@ def test_corpus_digest_is_deterministic():
     assert first["case_ids"] == second["case_ids"]
 
 
+def run_oracle(case_id: str, source: str) -> subprocess.CompletedProcess[str]:
+    manifest = json.loads((CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8"))
+    oracle = ROOT / manifest["oracle_file"]
+    with tempfile.TemporaryDirectory() as temporary:
+        workspace = Path(temporary)
+        (workspace / "app.py").write_text(source, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(oracle), str(workspace)],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+
+def test_model_dump_oracle_rejects_oracle_only_and_non_target_shapes():
+    sources = [
+        '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada")\n''',
+        '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada").dict()\n''',
+        '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return {"name": "Ada"}\n''',
+    ]
+    for source in sources:
+        result = run_oracle("pydantic-v1-to-v2-model-dump", source)
+        assert result.returncode != 0, result.stdout
+        assert json.loads(result.stdout.splitlines()[-1])["setup_failure"] is False
+
+
+def test_oracle_runs_app_main_once_without_replaying_side_effects():
+    source = '''from rich.console import Console\nfrom pathlib import Path\n\ndef main():\n    marker = Path("runs.txt")\n    marker.write_text(marker.read_text() + "x" if marker.exists() else "x")\n    Console().print("Hello", "World!")\n\n'''
+    result = run_oracle("rich-12-to-13-console", source)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+
 def test_real_target_version_api_mapping_is_exact():
     checker = __import__("scripts.check_version_guard_cases", fromlist=["expected_api_token"])
     expected = {

@@ -15,13 +15,16 @@ class _ValidationInfo:
     config = {"title": "Synthetic"}
 
 
+_VALIDATOR_STATE = {"decorator_calls": 0}
+
+
 def _field_validator(field_name):
+    _VALIDATOR_STATE["decorator_calls"] += 1
+
     def decorate(function):
         function._validated_field = field_name
         return function
     return decorate
-
-
 class _ModelMeta(type):
     def __new__(mcls, name, bases, namespace):
         validators = [value for value in namespace.values() if hasattr(value, "_validated_field")]
@@ -44,12 +47,14 @@ def _run(workspace: str) -> None:
     module.ValidationInfo = _ValidationInfo
     module.field_validator = _field_validator
     sys.modules["pydantic"] = module
-    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="__main__")
+    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="_version_guard_app")
     model = result.get("User")
-    if model is None or not callable(getattr(module, EXPECTED_API, None)):
-        raise AttributeError("documented validator decorator was not defined")
-    if model(name=" Ada ").name != "Ada":
-        raise AssertionError("field validator contract failed")
+    app_main = result.get("main")
+    if model is None or not callable(app_main):
+        raise AttributeError("documented validator integration was not defined")
+    output = app_main()
+    if _VALIDATOR_STATE["decorator_calls"] != 1 or output != "Ada":
+        raise AttributeError("application did not use field_validator exactly once")
 
 
 def main() -> int:

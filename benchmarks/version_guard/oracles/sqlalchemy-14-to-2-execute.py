@@ -16,6 +16,8 @@ class _Result:
 
 
 class _Connection:
+    execute_calls = 0
+
     def __enter__(self):
         return self
 
@@ -23,6 +25,7 @@ class _Connection:
         return False
 
     def execute(self, statement):
+        type(self).execute_calls += 1
         if not isinstance(statement, _Text):
             raise TypeError("textual statements must use text()")
         return _Result()
@@ -42,11 +45,13 @@ def _run(workspace: str) -> None:
     module.create_engine = lambda url: _Engine()
     module.text = lambda statement: _Text(statement)
     sys.modules["sqlalchemy"] = module
-    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="__main__")
-    if not callable(getattr(_Connection, EXPECTED_API, None)):
-        raise AttributeError("documented connection method was not defined")
-    if result.get("main", lambda: None)() .scalar_value != 1:
-        raise AssertionError("connection execution contract failed")
+    result = runpy.run_path(str(Path(workspace) / "app.py"), run_name="_version_guard_app")
+    app_main = result.get("main")
+    if not callable(app_main):
+        raise AttributeError("documented application entry point was not defined")
+    output = app_main()
+    if _Connection.execute_calls != 1 or getattr(output, "scalar_value", None) != 1:
+        raise AttributeError("application did not call connection.execute exactly once")
 
 
 def main() -> int:
