@@ -467,6 +467,10 @@ def _known_reason(exc: BaseException, allowed: set[str], fallback: str) -> str:
 
 
 class _Parser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> NoReturn:
         raise ValueError(message)
 

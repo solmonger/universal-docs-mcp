@@ -81,6 +81,41 @@ def test_root_matrix_is_command_scoped_and_write_free(tmp_path: Path):
             assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == snapshot
 
 
+def test_long_option_abbreviations_fail_closed_before_plan_selection(tmp_path, monkeypatch):
+    before = tmp_path / "before.txt"
+    after = tmp_path / "after.txt"
+    before.write_text("demo==1.0.0\n")
+    after.write_text("demo==1.0.1\n")
+
+    def planner_must_not_run(*args, **kwargs):
+        raise AssertionError("abbreviated option reached planner")
+
+    monkeypatch.setattr(product_cli, "plan_dependency_changes", planner_must_not_run)
+    base = ["plan", "--project-root", str(tmp_path), "--before", str(before), "--after", str(after)]
+    for abbreviated in (["--tas=first", "--task=second"], ["--pack=demo"], ["--proj=" + str(tmp_path)]):
+        rc, receipt = invoke(base + abbreviated)
+        assert rc == 1
+        assert receipt == product_cli._error("invalid_plan_request")
+
+
+def test_long_option_abbreviations_fail_closed_before_init(tmp_path, monkeypatch):
+    before = tmp_path / "before.txt"
+    after = tmp_path / "after.txt"
+    before.write_text("demo==1.0.0\n")
+    after.write_text("demo==1.0.1\n")
+    monkeypatch.setattr(product_cli, "_init_receipt", lambda *args: (_ for _ in ()).throw(AssertionError("abbreviated option reached init")))
+    base = ["init", "--harness", "claude-code", "--project-root", str(tmp_path), "--before", str(before), "--after", str(after)]
+    for abbreviated in (["--pack=demo"], ["--har=claude-code"], ["--proj=" + str(tmp_path)]):
+        rc, receipt = invoke(base + abbreviated)
+        assert rc == 1
+        assert receipt == {
+            "schema": "universal-docs.init/v1",
+            "mode": "dry-run",
+            "status": "abstained",
+            "reason": "init_invalid",
+        }
+
+
 def test_duplicate_guard_runs_before_parser_for_same_and_different_values(tmp_path, monkeypatch):
     root = str(tmp_path)
     cases = [
