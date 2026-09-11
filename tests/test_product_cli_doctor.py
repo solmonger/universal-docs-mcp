@@ -54,7 +54,7 @@ def test_real_hook_source_bearing_fixture_omits_body(tmp_path, monkeypatch):
     monkeypatch.setattr(product_cli, "_doctor_installation", lambda: {"status": "pass", "reason": "identity_match", "module_path": "/installed/universal_docs_mcp/__init__.py", "installed_version": "0.4.0rc2", "executable": "/installed/bin/python"})
     rc, receipt = call(root)
     assert rc == 0
-    assert receipt["source_probe"]["probe_mode"] == "fixture"
+    assert receipt["source_probe"]["probe_mode"] == "installed_hook"
     assert receipt["source_probe"]["source_body_omitted"] is True
     assert "Real fixture documentation" not in json.dumps(receipt)
 

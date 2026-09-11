@@ -208,9 +208,12 @@ def _doctor_installation() -> dict[str, Any]:
 def _doctor_probe(
     hook: Path, adapter: Path, request: dict[str, Any] | None
 ) -> tuple[dict[str, Any], str]:
-    """Run the real wrapper with bounded pipes and kill its process group."""
+    """Exercise the installed hook seam and return only bounded receipt metadata."""
     try:
-        config = load_config(adapter)
+        try:
+            config = load_config(adapter)
+        except (OSError, TypeError, ValueError):
+            return {}, "probe_malformed"
         command = [str(hook), "--harness", "claude", "--config", str(adapter)]
         timeout = min(max(config.timeout_ms / 1000.0, 0.1), 5.0)
         proc = subprocess.Popen(
@@ -224,35 +227,35 @@ def _doctor_probe(
         )
         stdout, stderr = bytearray(), bytearray()
         selector = selectors.DefaultSelector()
-        for stream, kind in (
-            (proc.stdin, "in"),
-            (proc.stdout, "out"),
-            (proc.stderr, "err"),
-        ):
+        for stream, kind in ((proc.stdout, "out"), (proc.stderr, "err")):
             os.set_blocking(stream.fileno(), False)
-            selector.register(
-                stream.fileno(),
-                selectors.EVENT_WRITE if kind == "in" else selectors.EVENT_READ,
-                kind,
-            )
-        event, sent, status = b"{}\n", 0, "completed"
+            selector.register(stream.fileno(), selectors.EVENT_READ, kind)
+        stdin = proc.stdin
+        try:
+            os.write(stdin.fileno(), b"{}\n")
+        except OSError:
+            pass
+        stdin.close()
+        status = "completed"
         deadline = __import__("time").monotonic() + timeout
+        parent_exit_deadline: float | None = None
         try:
             while selector.get_map():
-                remaining = deadline - __import__("time").monotonic()
+                now = __import__("time").monotonic()
+                if proc.poll() is not None and parent_exit_deadline is None:
+                    # A descendant may retain the pipes after the parent exits. Kill
+                    # the session immediately, then drain only the already-buffered bytes.
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                    parent_exit_deadline = now + 0.25
+                limit_deadline = parent_exit_deadline or deadline
+                remaining = limit_deadline - now
                 if remaining <= 0:
-                    status = "probe_timeout"
+                    status = "probe_timeout" if parent_exit_deadline is None else "probe_descendant_timeout"
                     break
                 for key, _ in selector.select(min(0.05, remaining)):
-                    if key.data == "in":
-                        try:
-                            sent += os.write(key.fd, event[sent:])
-                        except OSError:
-                            sent = len(event)
-                        if sent == len(event):
-                            selector.unregister(key.fd)
-                            proc.stdin.close()
-                        continue
                     try:
                         chunk = os.read(key.fd, 8192)
                     except (BlockingIOError, InterruptedError):
@@ -260,14 +263,14 @@ def _doctor_probe(
                     if not chunk:
                         selector.unregister(key.fd)
                         continue
-                    target, limit = (
-                        (stdout, MAX_HOOK_OUTPUT_BYTES)
+                    target, limit, too_large = (
+                        (stdout, MAX_HOOK_OUTPUT_BYTES, "probe_stdout_too_large")
                         if key.data == "out"
-                        else (stderr, 16 * 1024)
+                        else (stderr, 16 * 1024, "probe_stderr_too_large")
                     )
                     target.extend(chunk[: max(0, limit + 1 - len(target))])
                     if len(target) > limit:
-                        status = "probe_output_too_large"
+                        status = too_large
                         break
                 if status != "completed":
                     break
@@ -291,122 +294,99 @@ def _doctor_probe(
                     pass
         if status != "completed":
             return {"timeout_ms": int(timeout * 1000)}, status
-        stdout = bytes(stdout)
+        raw = bytes(stdout)
+        if proc.returncode is None or proc.returncode < 0:
+            return {"returncode": proc.returncode}, "probe_signal_exit"
         if proc.returncode != 0:
-            return {"returncode": proc.returncode}, "preflight_nonzero"
-        if len(stdout) > MAX_HOOK_OUTPUT_BYTES:
-            return {"stdout_bytes": len(stdout)}, "probe_output_too_large"
-        payload = json.loads(
-            stdout.decode("utf-8"),
-            object_pairs_hook=_pairs_no_duplicates,
-            parse_constant=_reject_json_constant,
-        )
-        context = (
-            payload.get("hookSpecificOutput", {}).get("additionalContext")
-            if isinstance(payload, dict)
-            else None
-        )
-        if (
-            not isinstance(context, str)
-            or context.count("--- BEGIN UNTRUSTED DOCUMENTATION DATA ---") != 1
-            or context.count("--- END UNTRUSTED DOCUMENTATION DATA ---") != 1
-        ):
-            return {"returncode": proc.returncode}, "source_less_or_malformed"
-        fields = {}
-        allowed = {
-            "Target package",
-            "Target version",
-            "Source kind",
-            "Source version binding",
-            "Source SHA-256",
-            "Freshness policy",
-            "Freshness state",
-        }
+            return {"returncode": proc.returncode}, "probe_nonzero_exit"
+        if not raw:
+            return {}, "probe_no_stdout"
+        if not raw.strip():
+            return {}, "probe_whitespace_stdout"
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {}, "probe_invalid_utf8"
+        try:
+            payload = json.loads(text, object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_json_constant)
+        except ValueError as exc:
+            if str(exc) == "duplicate_json_key":
+                return {}, "probe_duplicate_json_keys"
+            if isinstance(exc, json.JSONDecodeError) and "Extra data" in str(exc):
+                return {}, "probe_multiple_json_values"
+            return {}, "probe_malformed_json"
+        if not isinstance(payload, dict):
+            return {}, "probe_result_not_object"
+        if payload.get("decision") == "block" and isinstance(payload.get("reason"), str):
+            reason = payload["reason"].rsplit(": ", 1)[-1].rstrip(".")
+            if reason.startswith(("preflight_", "response_", "adapter_")):
+                return {}, reason
+            return {}, "probe_hook_rejected"
+        if set(payload) != {"hookSpecificOutput"}:
+            return {}, "probe_result_extra_fields"
+        output = payload.get("hookSpecificOutput")
+        if not isinstance(output, dict) or set(output) != {"hookEventName", "additionalContext"}:
+            return {}, "probe_result_invalid_fields"
+        if output.get("hookEventName") != "UserPromptSubmit":
+            return {}, "probe_result_invalid_fields"
+        context = output.get("additionalContext")
+        if not isinstance(context, str):
+            return {}, "probe_result_missing_required_fields"
+        if context.count("--- BEGIN UNTRUSTED DOCUMENTATION DATA ---") != 1 or context.count("--- END UNTRUSTED DOCUMENTATION DATA ---") != 1:
+            return {}, "probe_source_contract_invalid"
+        fields: dict[str, str] = {}
+        allowed = {"Target package", "Target version", "Source kind", "Source version binding", "Source SHA-256", "Freshness policy", "Freshness state"}
         for line in context.splitlines():
             if ": " in line:
                 key, value = line.split(": ", 1)
                 if key in allowed:
                     if key in fields:
-                        return {}, "source_metadata_mismatch"
+                        return {}, "probe_source_metadata_invalid"
                     fields[key] = value
         if set(fields) != allowed:
-            return {}, "source_metadata_mismatch"
-        expected_package = (
-            json.dumps(request.get("package"))
-            if request and request.get("package")
-            else None
-        )
-        expected_version = (
-            json.dumps(request.get("requested_version") or request.get("version"))
-            if request
-            else None
-        )
-        if (
-            expected_package
-            and fields.get("Target package") != expected_package
-            or expected_version
-            and fields.get("Target version") != expected_version
-        ):
-            return {}, "source_metadata_mismatch"
-        source_sha = fields.get("Source SHA-256", "")
-        if len(source_sha) != 64 or any(
-            c not in "0123456789abcdef" for c in source_sha
-        ):
-            return {}, "source_metadata_mismatch"
-        freshness_policy = fields.get("Freshness policy", "")
-        freshness_state = fields.get("Freshness state", "")
+            return {}, "probe_source_metadata_missing"
+        expected_package = json.dumps(request.get("package")) if request and request.get("package") else None
+        expected_version = json.dumps(request.get("requested_version") or request.get("version")) if request else None
+        if ((expected_package and fields.get("Target package") != expected_package) or (expected_version and fields.get("Target version") != expected_version)):
+            return {}, "probe_source_selection_mismatch"
+        source_sha = fields["Source SHA-256"]
+        if len(source_sha) != 64 or any(c not in "0123456789abcdef" for c in source_sha):
+            return {}, "probe_source_metadata_invalid"
         try:
-            freshness_policy = json.loads(freshness_policy)
-            freshness_state = json.loads(freshness_state)
+            freshness_policy = json.loads(fields["Freshness policy"])
+            freshness_state = json.loads(fields["Freshness state"])
         except (TypeError, json.JSONDecodeError):
-            pass
-        if (
-            freshness_policy != (request or {}).get("freshness_mode")
-            or freshness_state != "upstream_checked"
-        ):
-            return {}, "source_metadata_mismatch"
-        mode = (
-            "fixture"
-            if any(
-                os.environ.get("UNIVERSAL_DOCS_INIT_" + n.replace("-", "_").upper())
-                for n in (_HOOK_NAME, _PREFLIGHT_NAME)
-            )
-            else "live_registry"
-        )
+            return {}, "probe_source_metadata_invalid"
+        if freshness_policy != (request or {}).get("freshness_mode") or freshness_state != "upstream_checked":
+            return {}, "probe_source_freshness_invalid"
 
-        def packet_value(key: str) -> str | None:
-            value = fields.get(key)
-            if value is None:
-                return None
-            try:
-                decoded = json.loads(value)
-            except (TypeError, json.JSONDecodeError):
-                return value
-            return decoded if isinstance(decoded, str) else value
+        def packet_value(key: str) -> str:
+            value = json.loads(fields[key])
+            allowed_values = {
+                "Source kind": {"pypi_description", "npm_readme", "github_readme", "official_markdown"},
+                "Source version binding": {"registry_version", "unverified_git_ref", "versioned_url"},
+            }
+            if not isinstance(value, str) or value not in allowed_values[key]:
+                raise ValueError("probe_source_metadata_invalid")
+            return value
 
         return {
             "returncode": 0,
-            "probe_mode": mode,
+            "probe_mode": "installed_hook",
             "package": request.get("package") if request else None,
-            "version": request.get("requested_version") if request else None,
+            "version": (request.get("requested_version") or request.get("version")) if request else None,
+            "section_ids": list(request.get("section_ids", [])) if request else [],
             "source_kind": packet_value("Source kind"),
             "source_version_binding": packet_value("Source version binding"),
             "source_sha256": source_sha,
             "freshness_policy": freshness_policy,
             "freshness_state": freshness_state,
             "packet_sha256": hashlib.sha256(context.encode()).hexdigest(),
-            "packet_bytes": len(stdout),
+            "packet_bytes": len(raw),
             "source_body_omitted": True,
         }, "source_bearing"
-    except (
-        OSError,
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-        TypeError,
-        ValueError,
-        RecursionError,
-    ):
-        return {}, "probe_malformed"
+    except (OSError, TypeError, ValueError, RecursionError):
+        return {}, "probe_contract_invalid"
 
 
 _HOOK_NAME = "universal-docs-command-hook"
