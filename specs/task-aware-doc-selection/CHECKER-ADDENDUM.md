@@ -29,3 +29,19 @@ The controller loaded the candidate from this worktree and observed:
 ## Acceptance remains unchanged
 
 All original slice requirements remain mandatory. No benchmark, Hermes, model, network, activation, merge, push, or rollout work is authorized.
+
+## Verification adjudication: pre-existing Ruff formatting debt
+
+The original contract's blanket instruction to run `ruff format --check` on every changed Python file assumed those files were formatted on the protected base. That assumption is false.
+
+Using the same Ruff version, interpreter, file list, and command on exact base `570417c34acf82de91f41707f22e2899fc6d25e7` returned exit `1` with `5 files would be reformatted`. On selector candidate `11de4bb798e1a277a6cf676ae8383a1655b45061`, the same command returned exit `1` with `3 files would be reformatted`; `planner.py` and `test_planner.py` are now formatted. The remaining failures are the pre-existing legacy formatting of `product_cli.py`, `test_product_cli_init.py`, and `test_product_cli_receipt_adversarial.py`.
+
+Mass-formatting those large legacy files would create an unrelated review surface and contradict the slice's scoped-change rule. Therefore, for this slice, the formatting gate is baseline-aware:
+
+- `ruff check` must pass for every changed Python file;
+- `ruff format --check` must pass for `planner.py` and `test_planner.py`, the files formatted within this slice;
+- the identical full changed-file formatter command must not report more failing files than the exact protected base;
+- `git diff --check` must pass;
+- no behavior, safety, test, or blocker/high review requirement is waived.
+
+This adjudication supersedes only the blanket full-file formatting sentence. It does not waive new formatting debt or permit unrelated formatting cleanup.
