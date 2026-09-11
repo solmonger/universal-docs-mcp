@@ -19,6 +19,14 @@ MAX_OUTPUT_BYTES = 16 * 1024
 _INIT_SCHEMA = "universal-docs.init/v1"
 _HOOK_NAME = "universal-docs-command-hook"
 _PREFLIGHT_NAME = "universal-docs-preflight"
+_INIT_ERROR_REASONS = {
+    "manifest_path_invalid", "manifest_path_escape", "project_root_invalid",
+    "executable_must_be_absolute", "executable_unavailable", "executable_not_regular",
+    "executable_not_executable", "settings_not_regular", "settings_invalid",
+    "duplicate_json_key", "adapter_invalid", "adapter_backup_invalid",
+    "settings_backup_invalid", "backup_conflict", "output_parent_invalid",
+    "conflicting_universal_docs_hook", "write_failed", "init_invalid",
+}
 
 
 class _Parser(argparse.ArgumentParser):
@@ -124,28 +132,67 @@ def _reject_json_constant(_: str) -> Any:
     raise ValueError("non_finite_json")
 
 
-def _read_settings(path: Path) -> tuple[dict[str, Any], bytes | None]:
+_MAX_INIT_FILE_BYTES = 64 * 1024
+
+
+def _read_existing(path: Path, *, missing: bytes | None = None, reason: str) -> bytes | None:
+    """Read a bounded regular file without following symlinks."""
     try:
         info = path.lstat()
     except FileNotFoundError:
-        return {}, None
+        return missing
     except OSError:
-        raise ValueError("settings_invalid") from None
+        raise ValueError(reason) from None
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise ValueError("settings_not_regular")
+        raise ValueError(reason)
     try:
-        raw = path.read_bytes()
+        with path.open("rb") as stream:
+            raw = stream.read(_MAX_INIT_FILE_BYTES + 1)
+    except OSError:
+        raise ValueError(reason) from None
+    if len(raw) > _MAX_INIT_FILE_BYTES:
+        raise ValueError(reason)
+    return raw
+
+
+def _parse_settings(raw: bytes) -> dict[str, Any]:
+    try:
         value = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_pairs_no_duplicates,
             parse_constant=_reject_json_constant,
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         reason = str(exc) if str(exc) == "duplicate_json_key" else "settings_invalid"
         raise ValueError(reason) from None
     if not isinstance(value, dict):
         raise ValueError("settings_invalid")
-    return value, raw
+    return value
+
+
+def _read_settings(path: Path) -> tuple[dict[str, Any], bytes | None]:
+    raw = _read_existing(path, missing=None, reason="settings_not_regular")
+    if raw is None:
+        return {}, None
+    return _parse_settings(raw), raw
+
+
+def _validate_backup(path: Path, preimage: bytes | None, *, kind: str) -> bytes | None:
+    raw = _read_existing(path, missing=None, reason=f"{kind}_backup_invalid")
+    if raw is None:
+        return None
+    if preimage is not None and raw != preimage:
+        raise ValueError("backup_conflict")
+    if kind == "settings":
+        _parse_settings(raw)
+    if kind == "adapter":
+        try:
+            value = json.loads(raw.decode("utf-8"), parse_constant=_reject_json_constant)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise ValueError("adapter_invalid") from None
+        if not isinstance(value, dict):
+            raise ValueError("adapter_invalid")
+    return raw
 
 
 def _hook_command(hook: Path, adapter: Path) -> str:
@@ -243,28 +290,46 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
     request = to_preflight_request(plan)
     adapter_path = root / ".universal-docs" / "adapter.json"
     settings_path = root / ".claude" / "settings.json"
+    adapter_backup_path = root / ".universal-docs" / "adapter.json.backup"
+    settings_backup_path = root / ".universal-docs" / "settings.json.backup"
     _validate_output_parent(adapter_path)
     _validate_output_parent(settings_path)
     adapter = _json_bytes({"preflight_command": [str(preflight)], "request": request.model_dump(mode="json", exclude_none=True), "timeout_ms": 30_000})
     command = _hook_command(hook, adapter_path)
-    settings, old = _read_settings(settings_path)
+    settings, old_settings = _read_settings(settings_path)
+    old_adapter = _read_existing(adapter_path, missing=None, reason="adapter_invalid")
+    if old_adapter is not None:
+        try:
+            value = json.loads(old_adapter.decode("utf-8"), parse_constant=_reject_json_constant)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise ValueError("adapter_invalid") from None
+        if not isinstance(value, dict):
+            raise ValueError("adapter_invalid")
     proposed, changed = _settings_with_hook(settings, command)
     settings_bytes = _json_bytes(proposed)
+    backups: list[dict[str, str]] = []
+    backup_writes: list[tuple[Path, bytes]] = []
+    existing_adapter_backup = _validate_backup(adapter_backup_path, old_adapter, kind="adapter")
+    existing_settings_backup = _validate_backup(settings_backup_path, old_settings, kind="settings")
+    if old_adapter is not None:
+        backups.append({"relative_path": ".universal-docs/adapter.json.backup", "sha256": _sha256(old_adapter)})
+        if existing_adapter_backup is None:
+            backup_writes.append((adapter_backup_path, old_adapter))
+    if old_settings is not None and changed:
+        backups.append({"relative_path": ".universal-docs/settings.json.backup", "sha256": _sha256(old_settings)})
+        if existing_settings_backup is None:
+            backup_writes.append((settings_backup_path, old_settings))
     receipt["hashes"] = {".universal-docs/adapter.json": _sha256(adapter), ".claude/settings.json": _sha256(settings_bytes)}
     receipt["hook_identity"].update({"command_sha256": _sha256(command.encode()), "command_template": shlex.join([str(hook), "--harness", "claude", "--config", ".universal-docs/adapter.json"])})
     receipt["rollback"].update({"settings_changed": changed})
-    backup: Path | None = None
-    if old is not None and changed:
-        backup = root / ".universal-docs" / "settings.json.backup"
-        receipt["backup"] = {"relative_path": ".universal-docs/settings.json.backup", "sha256": _sha256(old)}
-        receipt["rollback"]["backup_relative_path"] = ".universal-docs/settings.json.backup"
+    if backups:
+        receipt["backups"] = backups
     if args.apply:
-        if changed:
-            if old is not None:
-                assert backup is not None
-                _atomic_write(backup, old)
-            _atomic_write(settings_path, settings_bytes)
+        for path, raw in backup_writes:
+            _atomic_write(path, raw)
         _atomic_write(adapter_path, adapter)
+        if changed:
+            _atomic_write(settings_path, settings_bytes)
     return receipt, 0
 
 
@@ -296,7 +361,10 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
             raise ValueError("command_required")
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         if args is not None and args.command == "init":
-            _emit({"schema": _INIT_SCHEMA, "mode": "apply" if args.apply else "dry-run", "status": "abstained", "reason": str(exc)}, output)
+            reason = str(exc)
+            if reason not in _INIT_ERROR_REASONS:
+                reason = "write_failed" if args.apply else "init_invalid"
+            _emit({"schema": _INIT_SCHEMA, "mode": "apply" if args.apply else "dry-run", "status": "abstained", "reason": reason}, output)
             return 1
         payload = _error("invalid_plan_request")
     _emit(payload, output)
