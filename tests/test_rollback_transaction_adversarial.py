@@ -187,6 +187,7 @@ def test_each_compensation_restore_is_attempted_and_fails_closed(
 ):
     root = project(tmp_path, monkeypatch, b'{"old":1}\n')
     init_apply(root)
+    before = snapshot(root)
     original_write = product_cli._atomic_write
     original_restore = product_cli._restore_file
     restore_calls = 0
@@ -216,17 +217,24 @@ def test_each_compensation_restore_is_attempted_and_fails_closed(
     monkeypatch.setattr(product_cli, "_restore_file", fail_recovery)
     rc, receipt = call(root, "rollback", "--apply")
     assert rc == 1 and receipt["reason"] == "recovery_failed"
-    state_path = root / ".universal-docs/install-state.json"
     marker_path = root / ".universal-docs/recovery-marker.json"
+    assert marker_path.exists()
+    marker = json.loads(marker_path.read_text())
+    assert marker["schema"] == "universal-docs.recovery-marker/v2"
+    assert set(marker) == {
+        "schema",
+        "state_sha256",
+        "adapter_sha256",
+        "settings_sha256",
+        "settings_backup_sha256",
+        "preimage_sha256",
+    }
+    assert all(not Path(value).is_absolute() for value in marker.values() if isinstance(value, str))
+    state_path = root / ".universal-docs/install-state.json"
     if compensation_target == "state":
         assert not state_path.exists()
-        marker = json.loads(marker_path.read_text())
-        assert marker["schema"] == "universal-docs.recovery-marker/v1"
-        assert set(marker) == {"schema", "state_sha256", "adapter_sha256", "settings_sha256", "preimage_sha256"}
-        assert all(not Path(value).is_absolute() for value in marker.values() if isinstance(value, str))
     else:
-        assert state_path.read_bytes() == product_cli._read_state(root)[1]
-        assert not marker_path.exists()
+        assert state_path.read_bytes() == before[".universal-docs/install-state.json"][1]
     assert "injected" not in json.dumps(receipt)
 
 
@@ -301,6 +309,50 @@ def test_generated_adapter_removal_failure_restores_pre_call_topology(tmp_path, 
     rc, receipt = call(root, "rollback", "--apply")
     assert rc == 1 and receipt["reason"] == "rollback_failed"
     assert snapshot(root) == before
+
+
+def test_initial_marker_write_failure_is_zero_mutation(tmp_path, monkeypatch):
+    root = project(tmp_path, monkeypatch, b'{"old":1}\n')
+    init_apply(root)
+    before = snapshot(root)
+    original_write = product_cli._atomic_write
+
+    def fail_marker(path, raw):
+        if path == root / ".universal-docs/recovery-marker.json":
+            raise OSError("marker write")
+        return original_write(path, raw)
+
+    monkeypatch.setattr(product_cli, "_atomic_write", fail_marker)
+    rc, receipt = call(root, "rollback", "--apply")
+    assert rc == 1 and receipt["reason"] == "rollback_failed"
+    assert snapshot(root) == before
+
+
+def test_marker_remove_failure_is_recovery_failed_and_quarantines(tmp_path, monkeypatch):
+    root = project(tmp_path, monkeypatch, b'{"old":1}\n')
+    init_apply(root)
+    original_unlink = Path.unlink
+
+    def fail_marker_remove(path, *args, **kwargs):
+        if path == root / ".universal-docs/recovery-marker.json":
+            raise OSError("marker remove")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_marker_remove)
+    rc, receipt = call(root, "rollback", "--apply")
+    assert rc == 1 and receipt["reason"] == "recovery_failed"
+    assert (root / ".universal-docs/recovery-marker.json").is_file()
+    assert not (root / ".universal-docs/install-state.json").exists()
+    monkeypatch.undo()
+    for command in (
+        ["init", "--harness", "claude-code", "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply"],
+        ["doctor"],
+        ["rollback", "--apply"],
+    ):
+        rc, receipt = call(root, *command)
+        assert rc == 1
+        if command[0] != "doctor":
+            assert receipt["reason"] == "recovery_required"
 
 
 def test_new_settings_backup_survives_cleanup_failure_hash_bound(tmp_path, monkeypatch):

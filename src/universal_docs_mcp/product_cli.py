@@ -781,6 +781,7 @@ _STATE_SCHEMA = "universal-docs.install-state/v1"
 _STATE_RELATIVE_PATH = ".universal-docs/install-state.json"
 _TOMBSTONE_RELATIVE_PATH = ".universal-docs/rollback-tombstone.json"
 _RECOVERY_MARKER_RELATIVE_PATH = ".universal-docs/recovery-marker.json"
+_RECOVERY_MARKER_SCHEMA = "universal-docs.recovery-marker/v2"
 _RECOVERY_REQUIRED_REASON = "recovery_required"
 _HASH_RE = __import__("re").compile(r"^[0-9a-f]{64}$")
 
@@ -912,12 +913,25 @@ def _read_recovery_marker(root: Path) -> tuple[dict[str, Any] | None, bytes | No
         raise ValueError("recovery_marker_invalid") from None
     if (
         not isinstance(value, dict)
-        or set(value) != {"schema", "state_sha256", "adapter_sha256", "settings_sha256", "preimage_sha256"}
-        or value.get("schema") != "universal-docs.recovery-marker/v1"
+        or set(value)
+        != {
+            "schema",
+            "state_sha256",
+            "adapter_sha256",
+            "settings_sha256",
+            "settings_backup_sha256",
+            "preimage_sha256",
+        }
+        or value.get("schema") != _RECOVERY_MARKER_SCHEMA
     ):
         raise ValueError("recovery_marker_invalid")
     try:
-        for key in ("state_sha256", "adapter_sha256", "settings_sha256"):
+        for key in (
+            "state_sha256",
+            "adapter_sha256",
+            "settings_sha256",
+            "settings_backup_sha256",
+        ):
             _state_hash(value[key])
         _state_hash(value["preimage_sha256"], nullable=True)
     except ValueError:
@@ -931,13 +945,19 @@ def _assert_no_recovery_marker(root: Path) -> None:
         raise ValueError(_RECOVERY_REQUIRED_REASON)
 
 
-def _recovery_marker_bytes(state_raw: bytes, state: dict[str, Any], settings_raw: bytes) -> bytes:
+def _recovery_marker_bytes(
+    state_raw: bytes,
+    state: dict[str, Any],
+    settings_raw: bytes,
+    settings_backup_raw: bytes,
+) -> bytes:
     return _json_bytes(
         {
-            "schema": "universal-docs.recovery-marker/v1",
+            "schema": _RECOVERY_MARKER_SCHEMA,
             "state_sha256": _sha256(state_raw),
             "adapter_sha256": state["adapter"]["sha256"],
             "settings_sha256": _sha256(settings_raw),
+            "settings_backup_sha256": _sha256(settings_backup_raw),
             "preimage_sha256": state["adapter"]["preimage_sha256"],
         }
     )
@@ -1769,13 +1789,21 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
             "preimage_sha256": preimage_hash,
         }
     )
-    # Validate any existing marker before the first rollback mutation; a corrupt
-    # marker is history we cannot safely replace or infer.
+    # The marker is write-ahead: it is the first mutation and therefore exists
+    # before the backup, settings, adapter, state, or tombstone can change.
     old_tombstone_value, old_tombstone = _read_tombstone(root)
     del old_tombstone_value
     current_settings_backup = _backup_path(root, "settings", settings_raw)
     _validate_output_parent(root, current_settings_backup)
+    assert state_raw is not None and settings_raw is not None
+    _validate_backup(current_settings_backup, settings_raw, kind="settings")
     created_backup = not current_settings_backup.exists()
+    marker_raw = _recovery_marker_bytes(state_raw, state, settings_raw, settings_raw)
+    try:
+        _atomic_write(marker_path, marker_raw)
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("rollback_failed") from None
+
     try:
         _write_backup(current_settings_backup, settings_raw, kind="settings")
         _atomic_write(settings_path, new_settings_raw)
@@ -1792,37 +1820,54 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
             except (OSError, RuntimeError, ValueError):
                 recovery_failed = True
 
-        # Do not let one failed compensation prevent the remaining safeguards.
-        recover(lambda: _restore_file(
-            settings_path, settings_raw, stat.S_IMODE(old_settings_stat.st_mode), old_settings_stat.st_mtime_ns
-        ))
-        recover(lambda: _restore_file(
-            adapter_path, adapter_raw, stat.S_IMODE(old_adapter_stat.st_mode), old_adapter_stat.st_mtime_ns
-        ))
-        state_restore_failed = False
-
-        def recover_state() -> None:
-            nonlocal recovery_failed, state_restore_failed
-            try:
-                _restore_file(state_path, state_raw, stat.S_IMODE(old_state_stat.st_mode), old_state_stat.st_mtime_ns)
-            except (OSError, RuntimeError, ValueError):
-                recovery_failed = True
-                state_restore_failed = True
-
-        recover_state()
-        recover(lambda: _restore_file(
-            tombstone_path, old_tombstone, 0o600 if old_tombstone is not None else None, None
-        ))
+        # Attempt every compensation while the write-ahead marker remains.
+        recover(
+            lambda: _restore_file(
+                settings_path,
+                settings_raw,
+                stat.S_IMODE(old_settings_stat.st_mode),
+                old_settings_stat.st_mtime_ns,
+            )
+        )
+        recover(
+            lambda: _restore_file(
+                adapter_path,
+                adapter_raw,
+                stat.S_IMODE(old_adapter_stat.st_mode),
+                old_adapter_stat.st_mtime_ns,
+            )
+        )
+        recover(
+            lambda: _restore_file(
+                state_path,
+                state_raw,
+                stat.S_IMODE(old_state_stat.st_mode),
+                old_state_stat.st_mtime_ns,
+            )
+        )
+        recover(
+            lambda: _restore_file(
+                tombstone_path,
+                old_tombstone,
+                0o600 if old_tombstone is not None else None,
+                None,
+            )
+        )
         if created_backup:
             recover(lambda: current_settings_backup.unlink(missing_ok=True))
-        if state_restore_failed:
-            # State could not be restored; leave a tiny, validated quarantine marker
-            # so init cannot adopt any orphaned generated bytes as a new install.
-            assert state_raw is not None and settings_raw is not None
-            recover(lambda: _atomic_write(
-                marker_path, _recovery_marker_bytes(state_raw, state, settings_raw)
-            ))
+        if not recovery_failed:
+            try:
+                marker_path.unlink(missing_ok=True)
+            except (OSError, RuntimeError, ValueError):
+                recovery_failed = True
         raise ValueError("recovery_failed" if recovery_failed else "rollback_failed") from None
+
+    # Cleanup is the final transaction step. Failure is not success: the marker
+    # remains and all public entry points continue to refuse the project.
+    try:
+        marker_path.unlink(missing_ok=True)
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("recovery_failed") from None
     return receipt, 0
 
 
