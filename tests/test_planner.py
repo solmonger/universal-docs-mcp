@@ -546,12 +546,23 @@ def test_checker_addendum_cli_rejects_duplicate_task_bare_syntax(tmp_path):
     output = io.BytesIO()
     code = product_cli.main(
         [
-            "plan", "--project-root", str(tmp_path), "--before", str(before),
-            "--after", str(after), "--task", "first", "--task", "second",
+            "plan",
+            "--project-root",
+            str(tmp_path),
+            "--before",
+            str(before),
+            "--after",
+            str(after),
+            "--task",
+            "first",
+            "--task",
+            "second",
         ],
         stdout=output,
     )
-    assert code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
+    assert (
+        code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
+    )
 
 
 @pytest.mark.parametrize(
@@ -567,12 +578,20 @@ def test_checker_addendum_cli_rejects_duplicate_scalar_equals_syntax(tmp_path, e
     output = io.BytesIO()
     code = product_cli.main(
         [
-            "plan", "--project-root", str(tmp_path), "--before", str(before),
-            "--after", str(after), *extra,
+            "plan",
+            "--project-root",
+            str(tmp_path),
+            "--before",
+            str(before),
+            "--after",
+            str(after),
+            *extra,
         ],
         stdout=output,
     )
-    assert code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
+    assert (
+        code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
+    )
 
 
 def test_checker_addendum_cli_repeats_equals_form_source(tmp_path):
@@ -581,8 +600,16 @@ def test_checker_addendum_cli_repeats_equals_form_source(tmp_path):
     output = io.BytesIO()
     code = product_cli.main(
         [
-            "plan", "--project-root", str(tmp_path), "--before", str(before),
-            "--after", str(after), "--task=x", "--source=app.py", "--source=app.py",
+            "plan",
+            "--project-root",
+            str(tmp_path),
+            "--before",
+            str(before),
+            "--after",
+            str(after),
+            "--task=x",
+            "--source=app.py",
+            "--source=app.py",
         ],
         stdout=output,
     )
@@ -594,8 +621,15 @@ def test_checker_addendum_cli_repeats_equals_form_source(tmp_path):
         output = io.BytesIO()
         code = product_cli.main(
             [
-                "plan", "--project-root", str(tmp_path), "--before", str(before),
-                "--after", str(after), "--task=x", *source_args,
+                "plan",
+                "--project-root",
+                str(tmp_path),
+                "--before",
+                str(before),
+                "--after",
+                str(after),
+                "--task=x",
+                *source_args,
             ],
             stdout=output,
         )
