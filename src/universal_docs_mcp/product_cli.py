@@ -21,7 +21,11 @@ from typing import Any, BinaryIO, NoReturn
 
 from . import __version__
 from .cache import DEFAULT_CACHE_DIR
-from .command_hook import MAX_HOOK_OUTPUT_BYTES, load_config
+from .command_hook import (
+    COMMAND_HOOK_BLOCK_CODES,
+    MAX_HOOK_OUTPUT_BYTES,
+    load_config,
+)
 from .planner import plan_dependency_changes, to_preflight_request
 
 MAX_OUTPUT_BYTES = 16 * 1024
@@ -318,9 +322,19 @@ def _doctor_probe(
         if not isinstance(payload, dict):
             return {}, "probe_result_not_object"
         if payload.get("decision") == "block" and isinstance(payload.get("reason"), str):
-            reason = payload["reason"].rsplit(": ", 1)[-1].rstrip(".")
-            if reason.startswith(("preflight_", "response_", "adapter_")):
-                return {}, reason
+            reason = payload["reason"]
+            prefix = "Universal Docs preflight blocked this prompt: "
+            suffix = ". No documentation context was injected."
+            if reason.startswith(prefix):
+                code = reason[len(prefix) :]
+                if code.endswith(suffix):
+                    code = code[: -len(suffix)]
+                elif code.endswith("."):
+                    code = code[:-1]
+                else:
+                    code = ""
+                if code in COMMAND_HOOK_BLOCK_CODES:
+                    return {}, code
             return {}, "probe_hook_rejected"
         if set(payload) != {"hookSpecificOutput"}:
             return {}, "probe_result_extra_fields"

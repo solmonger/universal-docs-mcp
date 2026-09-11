@@ -9,6 +9,7 @@ from pathlib import Path
 from universal_docs_mcp import product_cli
 from universal_docs_mcp.context_integrity import context_integrity
 
+SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 def response(package="demo", version="1.0.1"):
     context = "Real fixture documentation."
@@ -18,7 +19,14 @@ def response(package="demo", version="1.0.1"):
     return {"schema": "universal-docs.preflight/v1", "found": True, "context": context, "receipt": receipt, "retryable": False}
 
 
-def fixture(tmp_path: Path, monkeypatch, *, package="demo", version="1.0.1") -> Path:
+def fixture(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    package="demo",
+    version="1.0.1",
+    hook_script: str | None = None,
+) -> Path:
     root = tmp_path / "project"
     (root / "before").mkdir(parents=True)
     (root / "after").mkdir()
@@ -32,7 +40,19 @@ def fixture(tmp_path: Path, monkeypatch, *, package="demo", version="1.0.1") -> 
     preflight = tmp_path / "preflight"
     preflight.write_text(f"#!/bin/sh\ncat {answer}\n")
     hook = tmp_path / "hook"
-    hook.write_text(f"#!{sys.executable}\nimport sys\nfrom universal_docs_mcp.command_hook import main\nsys.exit(main())\n")
+    marker = tmp_path / "command-hook-module-path.txt"
+    hook.write_text(
+        hook_script
+        if hook_script is not None
+        else (
+            f"#!{sys.executable}\n"
+            "import pathlib, sys\n"
+            f"sys.path.insert(0, {str(SOURCE_ROOT)!r})\n"
+            "import universal_docs_mcp.command_hook as command_hook\n"
+            f"pathlib.Path({str(marker)!r}).write_text(str(pathlib.Path(command_hook.__file__).resolve()))\n"
+            "sys.exit(command_hook.main())\n"
+        )
+    )
     for path in (hook, preflight):
         path.chmod(0o700)
     monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_COMMAND_HOOK", str(hook))
@@ -56,7 +76,50 @@ def test_real_hook_source_bearing_fixture_omits_body(tmp_path, monkeypatch):
     assert rc == 0
     assert receipt["source_probe"]["probe_mode"] == "installed_hook"
     assert receipt["source_probe"]["source_body_omitted"] is True
+    assert (tmp_path / "command-hook-module-path.txt").read_text() == str(
+        (SOURCE_ROOT / "universal_docs_mcp" / "command_hook.py").resolve()
+    )
+    assert str(SOURCE_ROOT) not in json.dumps(receipt)
     assert "Real fixture documentation" not in json.dumps(receipt)
+
+
+def test_doctor_receipt_rejects_untrusted_block_text(tmp_path, monkeypatch):
+    malicious = (
+        "preflight_/private/secret API_KEY=top-secret\\x00"
+        " SOURCE_BODY_MARKER " + str(tmp_path)
+    )
+    payload = json.dumps({"decision": "block", "reason": malicious})
+    hook_script = (
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "sys.stdin.buffer.read()\n"
+        f"sys.stderr.write({malicious!r})\n"
+        f"sys.stdout.write({payload!r})\n"
+    )
+    root = fixture(tmp_path, monkeypatch, hook_script=hook_script)
+    monkeypatch.setattr(
+        product_cli,
+        "_doctor_installation",
+        lambda: {
+            "status": "pass",
+            "reason": "identity_match",
+            "module_path": "/installed/universal_docs_mcp/__init__.py",
+            "installed_version": "0.4.0rc2",
+            "executable": "/installed/bin/python",
+        },
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "scratch-home"))
+    out = io.BytesIO()
+    rc = product_cli.main(["doctor", "--project-root", str(root)], stdout=out)
+    encoded = out.getvalue()
+    receipt = json.loads(encoded)
+    assert rc == 1
+    assert len(encoded) <= product_cli.MAX_OUTPUT_BYTES
+    assert receipt["schema"] == "universal-docs.doctor/v1"
+    assert receipt["checks"][-1]["reason"] == "probe_hook_rejected"
+    rendered = encoded.decode()
+    for marker in (malicious, "SOURCE_BODY_MARKER", "top-secret", str(tmp_path)):
+        assert marker not in rendered
 
 
 def test_doctor_root_failures_are_doctor_receipts(tmp_path):
