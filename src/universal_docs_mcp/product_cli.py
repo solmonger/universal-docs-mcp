@@ -502,6 +502,8 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--before", required=True)
     plan.add_argument("--after", required=True)
     plan.add_argument("--package")
+    plan.add_argument("--task")
+    plan.add_argument("--source", action="append", default=[])
     init = commands.add_parser("init", add_help=False)
     init.add_argument("--harness", choices=("claude-code",), required=True)
     init.add_argument("--project-root", required=True, type=Path)
@@ -2020,7 +2022,8 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
             before = _safe_relative(args.before, root)
             after = _safe_relative(args.after, root)
             payload = plan_dependency_changes(
-                before, after, project_root=root, package=args.package
+                before, after, project_root=root, package=args.package,
+                task=args.task, source_paths=args.source,
             ).as_dict()
         elif args.command == "init":
             root = _validate_root(args.project_root, absolute_required=True)
