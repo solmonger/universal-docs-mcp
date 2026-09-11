@@ -116,6 +116,22 @@ def test_timeout_and_missing_executable_do_not_escape(tmp_path):
     assert missing["agent"]["error"] == "agent_not_executable"
 
 
+def test_manifest_accepts_three_arm_corpus_provenance_case():
+    case = {
+        **_case(),
+        "context_profile": "readme",
+        "expected_failure_class": "wrong_version_api",
+        "evidence_type": "synthetic_stub",
+        "evidence_note": "Synthetic local API stub; not live-package evidence.",
+        "oracle_file": "oracles/demo.py",
+        "manual_context_file": "contexts/manual.txt",
+        "automatic_context_file": "contexts/automatic.txt",
+    }
+
+    assert len(case) == 14
+    assert validate_manifest({"cases": [case]}) == [case]
+
+
 def test_malformed_cases_and_unsafe_paths_are_rejected():
     with pytest.raises(BenchmarkError):
         validate_manifest({"cases": []})

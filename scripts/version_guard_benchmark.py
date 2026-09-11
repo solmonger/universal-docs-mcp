@@ -22,7 +22,6 @@ SCHEMA = "universal-docs.benchmark/v1"
 ARMS = ("control", "manual", "automatic")
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_CASES = 100
-MAX_CASE_KEYS = 13
 MAX_STRING_BYTES = 16 * 1024
 MAX_ARGV_ITEMS = 32
 MAX_ARG_BYTES = 4 * 1024
@@ -97,7 +96,8 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
     for raw in manifest["cases"]:
         if not isinstance(raw, dict):
             raise BenchmarkError("each case must be an object")
-        if len(raw) > MAX_CASE_KEYS or not set(raw) <= required | optional:
+        allowed = required | optional
+        if not set(raw) <= allowed:
             raise BenchmarkError("case keys exceed the strict allowed set")
         if not required <= set(raw):
             raise BenchmarkError("case is missing a required field")
