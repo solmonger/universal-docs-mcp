@@ -967,36 +967,117 @@ def _state_live_matches(
     return len(matches) == 1
 
 
+_DOCTOR_CACHE_MAX_ENTRIES = 256
+_DOCTOR_CACHE_MAX_NAME_BYTES = 255
+
+
+def _doctor_cache_metadata(scope: str, *, root_status: str, identity: str | None,
+                           available: bool, entries: dict[str, Any] | None = None,
+                           reason: str = "cache_owner_classified") -> dict[str, Any]:
+    return {
+        "scope": scope,
+        "owner": "DocsCache",
+        "provenance": "production_default" if scope == "default_user_installation" else "fixture_override",
+        "path_semantics": "~/.cache/universal-docs-mcp" if scope == "default_user_installation" else "explicit fixture path (not production ownership)",
+        "identity": identity,
+        "available": available,
+        "root_status": root_status,
+        "reason": reason,
+        "entries": entries or {
+            "validity": "topology_only",
+            "total": 0,
+            "regular": 0,
+            "symlink": 0,
+            "directory": 0,
+            "special": 0,
+            "unreadable": 0,
+            "oversized_names": 0,
+            "names_truncated": False,
+        },
+    }
+
+
+def _doctor_cache_entries(cache: Path) -> tuple[dict[str, Any], str]:
+    counts = {
+        "validity": "topology_only",
+        "total": 0,
+        "regular": 0,
+        "symlink": 0,
+        "directory": 0,
+        "special": 0,
+        "unreadable": 0,
+        "oversized_names": 0,
+        "names_truncated": False,
+    }
+    try:
+        with os.scandir(cache) as directory:
+            for entry in directory:
+                if counts["total"] >= _DOCTOR_CACHE_MAX_ENTRIES:
+                    counts["names_truncated"] = True
+                    break
+                counts["total"] += 1
+                try:
+                    name_bytes = os.fsencode(entry.name)
+                    if len(name_bytes) > _DOCTOR_CACHE_MAX_NAME_BYTES:
+                        counts["oversized_names"] += 1
+                    mode = entry.stat(follow_symlinks=False).st_mode
+                except OSError:
+                    counts["unreadable"] += 1
+                    continue
+                if stat.S_ISLNK(mode):
+                    counts["symlink"] += 1
+                elif stat.S_ISREG(mode):
+                    counts["regular"] += 1
+                elif stat.S_ISDIR(mode):
+                    counts["directory"] += 1
+                else:
+                    counts["special"] += 1
+    except (OSError, RuntimeError):
+        return counts, "error"
+    return counts, "ok"
+
+
 def _doctor_cache(root: Path) -> tuple[dict[str, Any], str]:
+    """Classify the production cache without creating it or reading bodies.
+
+    ``UNIVERSAL_DOCS_CACHE_DIR`` is deliberately retained only as an explicit
+    test/fixture seam; it never changes the declared production owner.
+    """
     configured = os.environ.get("UNIVERSAL_DOCS_CACHE_DIR")
     if configured is not None:
         cache = Path(configured).expanduser()
         scope = "explicit"
+        identity_seed = f"DocsCache:fixture:{cache}"
         if not cache.is_absolute():
-            return {"scope": scope, "identity": None, "available": False}, "fail"
+            return _doctor_cache_metadata(scope, root_status="invalid", identity=None,
+                                          available=False, reason="explicit_path_not_absolute"), "fail"
     else:
         cache = DEFAULT_CACHE_DIR
         scope = "default_user_installation"
+        identity_seed = "DocsCache:production-default:~/.cache/universal-docs-mcp"
+    identity = _sha256(identity_seed.encode())
     try:
-        current = Path(cache.anchor)
-        for component in cache.parts[1:]:
-            current /= component
-            if not current.exists():
-                break
-            info = current.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                return {"scope": scope, "identity": None, "available": False}, "fail"
-        if cache.is_symlink() or (cache.exists() and not cache.is_dir()):
-            return {"scope": scope, "identity": None, "available": False}, "fail"
-        resolved = cache.resolve(strict=False)
-        identity = _sha256(str(resolved).encode())
-        return {
-            "scope": scope,
-            "identity": identity,
-            "available": cache.is_dir(),
-        }, "pass" if cache.is_dir() else "unknown"
-    except (OSError, RuntimeError):
-        return {"scope": "unknown", "identity": None, "available": False}, "unknown"
+        info = cache.lstat()
+    except FileNotFoundError:
+        return _doctor_cache_metadata(scope, root_status="missing", identity=identity,
+                                      available=False, reason="cache_missing_first_run"), "pass"
+    except OSError:
+        return _doctor_cache_metadata(scope, root_status="inaccessible", identity=identity,
+                                      available=False, reason="cache_root_inaccessible"), "unknown"
+    if stat.S_ISLNK(info.st_mode):
+        return _doctor_cache_metadata(scope, root_status="symlink", identity=identity,
+                                      available=False, reason="cache_root_symlink"), "fail"
+    if not stat.S_ISDIR(info.st_mode):
+        kind = "file" if stat.S_ISREG(info.st_mode) else "special"
+        return _doctor_cache_metadata(scope, root_status=kind, identity=identity,
+                                      available=False, reason=f"cache_root_{kind}"), "fail"
+    entries, entry_status = _doctor_cache_entries(cache)
+    if entry_status != "ok":
+        return _doctor_cache_metadata(scope, root_status="inaccessible", identity=identity,
+                                      available=False, entries=entries,
+                                      reason="cache_entries_inaccessible"), "unknown"
+    return _doctor_cache_metadata(scope, root_status="directory", identity=identity,
+                                  available=True, entries=entries), "pass"
 
 
 def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
@@ -1190,15 +1271,24 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
         if hook_ok and adapter_ok and executable_ok
         else ({}, "probe_prerequisite_failed")
     )
-    if probe_reason == "source_bearing" and cache_status == "unknown":
+    if probe_reason == "source_bearing":
+        # The real hook/preflight may own a first-run cache write.  Re-read
+        # topology after it, but never make classification itself create state.
         cache, cache_status = _doctor_cache(root)
-        checks[5] = _doctor_check(
+        cache_check_index = next(
+            index for index, check in enumerate(checks) if check["id"] == "cache_scope"
+        )
+        checks[cache_check_index] = _doctor_check(
             "cache_scope",
             cache_status,
-            "cache_owner_classified",
+            "cache_owner_classified_after_probe",
             scope=cache["scope"],
             identity=cache["identity"],
             available=cache["available"],
+            owner=cache["owner"],
+            provenance=cache["provenance"],
+            root_status=cache["root_status"],
+            entries=cache["entries"],
         )
     checks.append(
         _doctor_check(
