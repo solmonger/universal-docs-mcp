@@ -222,7 +222,9 @@ def _read_source_scoped(root: Path, relative: Path) -> bytes:
             current = os.open(part, directory_flags, dir_fd=current)
             fds.append(current)
         fd = os.open(
-            relative.parts[-1], flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=current
+            relative.parts[-1],
+            flags | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=current,
         )
         fds.append(fd)
         before = os.fstat(fd)

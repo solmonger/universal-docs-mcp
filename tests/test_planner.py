@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tests.test_context_cli import successful_result
+from universal_docs_mcp import planner as planner_module
 from universal_docs_mcp import product_cli
 from universal_docs_mcp.context_delivery import build_context_packet
 from universal_docs_mcp.context_integrity import context_integrity
@@ -186,6 +187,40 @@ def test_cli_selects_explicit_package_and_rejects_paths(tmp_path):
     assert (
         code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
     )
+
+
+def test_source_fifo_requires_nonblocking_final_open(tmp_path, monkeypatch):
+    before_path, after_path = write_pair(tmp_path, "demo==1.0.0\n", "demo==1.0.1\n")
+    source = tmp_path / "source.py"
+    os.mkfifo(source)
+    real_open = os.open
+    observed_flags: list[int] = []
+
+    def guarded_open(path, flags, *args, **kwargs):
+        if kwargs.get("dir_fd") is not None and path == "source.py":
+            observed_flags.append(flags)
+            assert flags & os.O_NONBLOCK
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(planner_module.os, "open", guarded_open)
+    monkeypatch.setattr(
+        planner_module.os,
+        "supports_dir_fd",
+        planner_module.os.supports_dir_fd | {guarded_open},
+    )
+    plan = plan_dependency_changes(
+        before_path,
+        after_path,
+        project_root=tmp_path,
+        task="migrate demo",
+        source_paths=("source.py",),
+    )
+
+    payload = plan.as_dict()
+    assert observed_flags
+    assert payload["status"] == "abstained"
+    assert payload["reason"] == "task_signal_invalid"
+    assert payload["query"] is None
 
 
 def test_cli_rejects_symlink_special_and_oversize(tmp_path):
