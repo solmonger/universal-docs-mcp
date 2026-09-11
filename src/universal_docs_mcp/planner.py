@@ -201,6 +201,55 @@ def _select(
     )
 
 
+def _read_source_scoped(root: Path, relative: Path) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    directory_flags = flags | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    root_fd = os.open(root, directory_flags)
+    fds = [root_fd]
+    try:
+        current = root_fd
+        for part in relative.parts[:-1]:
+            current = os.open(part, directory_flags, dir_fd=current)
+            fds.append(current)
+        fd = os.open(
+            relative.parts[-1], flags | getattr(os, "O_NOFOLLOW", 0), dir_fd=current
+        )
+        fds.append(fd)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 32 * 1024:
+            raise OSError("source_not_regular_or_oversized")
+        chunks: list[bytes] = []
+        size = 0
+        while size <= 32 * 1024:
+            chunk = os.read(fd, min(8192, 32 * 1024 + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        after = os.fstat(fd)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or after.st_dev != before.st_dev
+            or after.st_ino != before.st_ino
+            or after.st_size != before.st_size
+            or size > 32 * 1024
+        ):
+            raise OSError("source_changed")
+        return b"".join(chunks)
+    finally:
+        for fd in reversed(fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _attribute_root(node: ast.AST) -> str | None:
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def _source_signal(
     package: str,
     version: str,
@@ -227,132 +276,186 @@ def _source_signal(
     import_name = package.replace("-", "_")
     aliases: dict[str, str] = {}
     imported_names: set[str] = set()
-    symbols: set[str] = set()
+    trees: list[ast.AST] = []
     total = 0
-    for raw_path in paths:
-        if not isinstance(raw_path, (str, Path)):
-            return "task_signal_invalid"
-        relative = Path(raw_path)
-        if (
-            relative.is_absolute()
-            or not relative.parts
-            or any(p in ("", ".", "..") for p in relative.parts)
-            or relative.suffix != ".py"
-        ):
-            return "task_signal_invalid"
-        path = root.joinpath(relative)
-        try:
-            current = root
-            for part in relative.parts[:-1]:
-                current /= part
-                info = current.lstat()
-                if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                    return "task_signal_invalid"
-            info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+    tracked: set[str] = set()
+    try:
+        for raw_path in paths:
+            if not isinstance(raw_path, (str, Path)):
                 return "task_signal_invalid"
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            opened = os.fstat(fd)
+            relative = Path(raw_path)
             if (
-                stat.S_ISLNK(opened.st_mode)
-                or not stat.S_ISREG(opened.st_mode)
-                or opened.st_dev != info.st_dev
-                or opened.st_ino != info.st_ino
-                or opened.st_size != info.st_size
+                relative.is_absolute()
+                or not relative.parts
+                or relative.suffix != ".py"
+                or any(p in ("", ".", "..") for p in relative.parts)
             ):
-                os.close(fd)
                 return "task_signal_invalid"
-            try:
-                raw = os.read(fd, 32 * 1024 + 1)
-            finally:
-                os.close(fd)
-            if len(raw) > 32 * 1024:
-                return "task_signal_invalid"
+            raw = _read_source_scoped(root, relative)
             total += len(raw)
             if total > 128 * 1024:
                 return "task_signal_invalid"
-            tree = ast.parse(raw.decode("utf-8"), filename="<source>")
-        except (OSError, UnicodeDecodeError, SyntaxError, ValueError, RecursionError):
-            return "task_signal_invalid"
+            trees.append(ast.parse(raw.decode("utf-8"), filename="<source>"))
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, RecursionError):
+        return "task_signal_invalid"
+    for tree in trees:
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                top = node.module.split(".", 1)[0]
-                if top == import_name:
-                    if any(alias.name == "*" for alias in node.names):
-                        return "task_signal_ambiguous"
-                    for alias in node.names:
-                        local_name = alias.asname or alias.name
-                        imported_names.add(local_name)
-                        symbols.add(local_name)
-                        if alias.asname:
-                            if alias.asname in aliases:
-                                return "task_signal_ambiguous"
-                            aliases[alias.asname] = f"{import_name}.{alias.name}"
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.split(".", 1)[0] == import_name:
-                        local = alias.asname or import_name
-                        if local in aliases:
-                            return "task_signal_ambiguous"
-                        aliases[local] = import_name
-            elif isinstance(node, ast.Call):
-                if (
+            if isinstance(node, ast.Call) and (
+                (
                     isinstance(node.func, ast.Name)
                     and node.func.id in {"__import__", "import_module"}
-                ) or (
+                )
+                or (
                     isinstance(node.func, ast.Attribute)
                     and node.func.attr == "import_module"
-                ):
-                    return "task_signal_ambiguous"
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                root_name = (
-                    node.func.id
-                    if isinstance(node.func, ast.Name)
-                    else node.func.value.id
-                    if isinstance(node.func, ast.Attribute)
-                    and isinstance(node.func.value, ast.Name)
-                    else None
                 )
-                if root_name in aliases and aliases[root_name] == import_name:
-                    if isinstance(node.func, ast.Attribute):
-                        symbols.add(node.func.attr)
-                    symbols.update(
-                        keyword.arg for keyword in node.keywords if keyword.arg
+            ):
+                return "task_signal_ambiguous"
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                if node.module.split(".", 1)[0] == import_name:
+                    if any(a.name == "*" for a in node.names):
+                        return "task_signal_ambiguous"
+                    for a in node.names:
+                        local = a.asname or a.name
+                        value = f"{node.module}.{a.name}"
+                        if local in aliases and aliases[local] != value:
+                            return "task_signal_ambiguous"
+                        if local in imported_names and aliases.get(local) != value:
+                            return "task_signal_ambiguous"
+                        imported_names.add(local)
+                        aliases[local] = value
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.split(".", 1)[0] == import_name:
+                        local = a.asname or import_name
+                        if local in aliases and aliases[local] != import_name:
+                            return "task_signal_ambiguous"
+                        aliases[local] = import_name
+                    else:
+                        local = a.asname or (
+                            a.name.split(".", 1)[0] if "." in a.name else a.name
+                        )
+                        if local in aliases or local in imported_names:
+                            return "task_signal_ambiguous"
+    tracked = set(aliases) | imported_names
+    for tree in trees:
+        for node in ast.walk(tree):
+            bound: set[str] = set()
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                if isinstance(node, ast.AugAssign):
+                    targets = [node.target]
+                for target in targets:
+                    bound.update(
+                        n.id for n in ast.walk(target) if isinstance(n, ast.Name)
                     )
-                elif root_name in imported_names:
-                    symbols.update(
-                        keyword.arg for keyword in node.keywords if keyword.arg
-                    )
-    if not symbols and not aliases:
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                bound.add(node.name)
+                bound.update(
+                    a.arg
+                    for a in node.args.posonlyargs
+                    + node.args.args
+                    + node.args.kwonlyargs
+                )
+                if node.args.vararg:
+                    bound.add(node.args.vararg.arg)
+                if node.args.kwarg:
+                    bound.add(node.args.kwarg.arg)
+            elif isinstance(node, ast.ClassDef):
+                bound.add(node.name)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                bound.update(
+                    n.id for n in ast.walk(node.target) if isinstance(n, ast.Name)
+                )
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars:
+                        bound.update(
+                            n.id
+                            for n in ast.walk(item.optional_vars)
+                            if isinstance(n, ast.Name)
+                        )
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bound.add(node.name)
+            elif isinstance(node, ast.NamedExpr):
+                bound.add(node.target.id)
+            elif isinstance(node, ast.Lambda):
+                bound.update(
+                    a.arg
+                    for a in node.args.posonlyargs
+                    + node.args.args
+                    + node.args.kwonlyargs
+                )
+                if node.args.vararg:
+                    bound.add(node.args.vararg.arg)
+                if node.args.kwarg:
+                    bound.add(node.args.kwarg.arg)
+            elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+                bound.add(node.name)
+            elif isinstance(node, ast.MatchMapping) and node.rest:
+                bound.add(node.rest)
+            elif isinstance(node, ast.Delete):
+                bound.update(n.id for n in ast.walk(node) if isinstance(n, ast.Name))
+            if bound & tracked:
+                return "task_signal_ambiguous"
+            if isinstance(node, ast.Call) and (
+                (_attribute_root(node.func) in tracked)
+                or (isinstance(node.func, ast.Name) and node.func.id in tracked)
+            ):
+                func = node.func
+                while isinstance(func, ast.Attribute):
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", func.attr):
+                        # Attributes and the called name are both useful terms.
+                        tracked_term = func.attr
+                        aliases.setdefault("__symbols__", "")
+                        aliases["__symbols__"] += " " + tracked_term
+                    func = func.value
+                if isinstance(node.func, ast.Name):
+                    aliases.setdefault("__symbols__", "")
+                    aliases["__symbols__"] += " " + node.func.id
+                for keyword in node.keywords:
+                    if keyword.arg and re.fullmatch(
+                        r"[A-Za-z_][A-Za-z0-9_]{0,63}", keyword.arg
+                    ):
+                        aliases.setdefault("__symbols__", "")
+                        aliases["__symbols__"] += " " + keyword.arg
+    symbol_text = aliases.pop("__symbols__", "")
+    symbols = set(symbol_text.split()) | {
+        v.rsplit(".", 1)[-1] for v in aliases.values() if v and v != import_name
+    }
+    if not aliases:
         return "task_signal_not_found"
     selected = sorted(
-        term for term in symbols if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", term)
+        s for s in symbols if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", s)
     )[:24]
-    alias_terms = sorted(
-        f"{key}->{value}" for key, value in aliases.items() if key != import_name
+    base = " ".join(
+        [
+            import_name,
+            version,
+            "migration",
+            "upgrade",
+            "breaking",
+            "changes",
+            "quick",
+            "start",
+        ]
     )
-    query_parts = [
-        import_name,
-        version,
-        "migration",
-        "upgrade",
-        "breaking",
-        "changes",
-        "quick",
-        "start",
-    ]
+    query = base
+    for term in selected:
+        if len(query) + 1 + len(term) <= 512:
+            query += " " + term
     if task:
-        query_parts.extend(task.split())
-    query_parts.extend(selected)
-    query = " ".join(query_parts)[:512].rstrip()
-    if not query:
-        return "task_signal_not_found"
+        for term in task.split():
+            if len(query) + 1 + len(term) > 512:
+                break
+            query += " " + term
     return query, {
         "mode": "source_backed",
         "source_files_inspected": len(paths),
         "symbols": selected,
-        "aliases": alias_terms,
+        "aliases": sorted(f"{k}->{v}" for k, v in aliases.items() if k != import_name),
         "task_contributed": bool(task),
     }
 
@@ -400,7 +503,7 @@ def plan_dependency_changes(
             _abstain("dependency_unchanged", package=None, source=source),
         )
     source_paths = tuple(source_paths)
-    if not task and not source_paths:
+    if task is None and not source_paths:
         return selected
     if selected.status != "selected":
         return selected

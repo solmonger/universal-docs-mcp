@@ -475,7 +475,7 @@ _DUPLICATE_GUARDED_OPTIONS: dict[str, set[str]] = {
     "init": {"--project-root", "--before", "--after", "--harness", "--apply"},
     "doctor": {"--project-root"},
     "rollback": {"--project-root", "--apply"},
-    "plan": {"--project-root", "--before", "--after"},
+    "plan": {"--project-root", "--before", "--after", "--task"},
 }
 
 

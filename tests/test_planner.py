@@ -418,6 +418,118 @@ def test_source_backed_query_and_symbols_are_bounded(tmp_path):
     assert len(plan.as_dict()["selection"]["symbols"]) <= 24
 
 
+def test_checker_addendum_empty_task_does_not_fall_back_generic(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    plan = plan_dependency_changes(
+        before, after, project_root=tmp_path, task="", source_paths=()
+    )
+    assert plan.reason == "task_signal_invalid"
+    assert plan.as_dict()["query"] is None
+
+
+def test_checker_addendum_symbols_beat_long_task(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "app.py").write_text(
+        "from rich.console import Console\nConsole(highlight=False)\n"
+    )
+    plan = plan_dependency_changes(
+        before,
+        after,
+        project_root=tmp_path,
+        task=" ".join(["verbose"] * 60),
+        source_paths=("app.py",),
+    )
+    assert all(term in plan.query for term in ("Console", "highlight"))
+    assert len(plan.query) <= 512
+
+
+def test_checker_addendum_nested_chain_and_shadowing_fail_closed(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "nested.py").write_text(
+        "import rich\nrich.console.Console(highlight=False)\n"
+    )
+    nested = plan_dependency_changes(
+        before, after, project_root=tmp_path, task="x", source_paths=("nested.py",)
+    )
+    assert all(
+        term in nested.as_dict()["selection"]["symbols"]
+        for term in ("console", "Console", "highlight")
+    )
+    (tmp_path / "shadow.py").write_text(
+        "import rich as r\nimport requests as r\nr.get('x')\n"
+    )
+    shadowed = plan_dependency_changes(
+        before, after, project_root=tmp_path, task="x", source_paths=("shadow.py",)
+    )
+    assert shadowed.reason == "task_signal_ambiguous"
+
+
+def test_checker_addendum_identical_imports_and_nested_descriptor_paths(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "app.py").write_text("import rich\nrich.console.Console()\n")
+    (tmp_path / "other.py").write_text("import rich\n")
+    plan = plan_dependency_changes(
+        before,
+        after,
+        project_root=tmp_path,
+        task="x",
+        source_paths=("other.py", "pkg/app.py"),
+    )
+    assert plan.status == "selected"
+    assert "Console" in plan.as_dict()["selection"]["symbols"]
+    (tmp_path / "link").symlink_to(tmp_path / "pkg", target_is_directory=True)
+    rejected = plan_dependency_changes(
+        before, after, project_root=tmp_path, task="x", source_paths=("link/app.py",)
+    )
+    assert rejected.reason == "task_signal_invalid"
+
+
+def test_checker_addendum_cli_rejects_duplicate_task_but_repeats_source(tmp_path):
+    before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
+    (tmp_path / "app.py").write_text("import rich\nrich.print()\n")
+    output = io.BytesIO()
+    code = product_cli.main(
+        [
+            "plan",
+            "--project-root",
+            str(tmp_path),
+            "--before",
+            str(before),
+            "--after",
+            str(after),
+            "--task",
+            "first",
+            "--task",
+            "second",
+        ],
+        stdout=output,
+    )
+    assert (
+        code == 1 and json.loads(output.getvalue())["reason"] == "invalid_plan_request"
+    )
+    output = io.BytesIO()
+    code = product_cli.main(
+        [
+            "plan",
+            "--project-root",
+            str(tmp_path),
+            "--before",
+            str(before),
+            "--after",
+            str(after),
+            "--task",
+            "x",
+            "--source",
+            "app.py",
+            "--source",
+            "app.py",
+        ],
+        stdout=output,
+    )
+    assert code == 0
+
+
 def test_cli_source_options_reach_planner(tmp_path):
     before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
     (tmp_path / "app.py").write_text(
