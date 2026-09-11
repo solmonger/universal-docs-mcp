@@ -91,7 +91,7 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
     cases = []
     seen: set[str] = set()
     required = {"id", "ecosystem", "package", "target_version", "task", "workspace_fixture", "test_command"}
-    optional = {"context_files", "manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class"}
+    optional = {"context_files", "manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"}
     for raw in manifest["cases"]:
         if not isinstance(raw, dict):
             raise BenchmarkError("each case must be an object")
@@ -118,7 +118,7 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
                 if arm not in ARMS:
                     raise BenchmarkError(f"case {case_id} context_files has unknown arm")
                 _bounded_string(value, f"case {case_id} {arm} context file")
-        for key in ("manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class"):
+        for key in ("manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"):
             if key in raw:
                 _bounded_string(raw[key], f"case {case_id} {key}")
         cases.append(case)
@@ -229,11 +229,23 @@ def _run_bounded(
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        if os.name == "posix":
+    # Kill the entire process group to clean up descendants that may still hold
+    # the stdout pipe open. This is needed on both timeout AND normal exit: if a
+    # child inherited the pipe, the drain thread's read() will never see EOF
+    # until the child is gone, so reader.join() would block indefinitely.
+    if os.name == "posix":
+        try:
             os.killpg(process.pid, signal.SIGKILL)
-        else:
+        except ProcessLookupError:
+            pass
+    else:
+        try:
             process.kill()
-        process.wait()
+        except ProcessLookupError:
+            pass
+    process.wait()
+    if process.stdout is not None:
+        process.stdout.close()
     reader.join()
     return {
         "returncode": None if timed_out else process.returncode,

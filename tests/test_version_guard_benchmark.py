@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -243,3 +244,35 @@ def test_timed_out_process_is_cleaned_up(tmp_path):
     pid = int(pid_file.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process-group proof")
+def test_normal_exit_kills_descendant_holding_stdout(tmp_path):
+    manifest, fixture_root = _manifest(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    started = time.monotonic()
+    result = run_case(
+        manifest["cases"][0],
+        "control",
+        fixture_root,
+        tmp_path,
+        _command(
+            "import pathlib, subprocess, sys; "
+            "p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(2)']); "
+            f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid))"
+        ),
+        timeout_seconds=0.1,
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0
+    assert result["agent"]["status"] == "passed"
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"descendant process {pid} is still alive")
