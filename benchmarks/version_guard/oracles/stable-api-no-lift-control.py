@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 CASE_ID = "stable-api-no-lift-control"
-EXPECTED_API = "stable_replacement"
+EXPECTED_API = "__NO_API_ORACLE__"
 
 def main() -> int:
     try:

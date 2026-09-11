@@ -8,7 +8,7 @@
   "oracle_file": "benchmarks/version_guard/oracles/stable-api-no-lift-control.py",
   "package": "packaging",
   "target_version": "24.0",
-  "task": "Exercise a stable API with a general coding failure; documentation cannot lift this control.",
+  "task": "Repair the off-by-one indexing bug in the stable API control; documentation must not supply the behavioral answer.",
   "test_command": [
     "python3",
     "-c",

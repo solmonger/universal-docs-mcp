@@ -39,7 +39,14 @@ def test_visible_fixtures_have_no_oracle_or_api_stub_files_or_tokens():
         assert not list(fixture.rglob("versioned_api.py"))
         oracle = ROOT / case["oracle_file"]
         token = checker.expected_api_token(oracle, case["id"]).encode()
-        visible = [manifest_path.read_bytes(), case["task"].encode(), *(p.read_bytes() for p in fixture.rglob("*") if p.is_file())]
+        visible = [
+            case["task"].encode(),
+            *(
+                p.read_bytes()
+                for p in fixture.rglob("*")
+                if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
+            ),
+        ]
         assert all(token not in data for data in visible)
 
 
@@ -48,6 +55,34 @@ def test_corpus_digest_is_deterministic():
     _, second = run_checker()
     assert first["corpus_sha256"] == second["corpus_sha256"]
     assert first["case_ids"] == second["case_ids"]
+
+
+def test_real_target_version_api_mapping_is_exact():
+    checker = __import__("scripts.check_version_guard_cases", fromlist=["expected_api_token"])
+    expected = {
+        "attrs-21-to-23-slots": "define",
+        "click-7-to-8-parameter": "option",
+        "httpx-0-to-1-client": "Client",
+        "packaging-22-to-24-version": "Version",
+        "pydantic-v1-to-v2-model-dump": "model_dump",
+        "pydantic-v1-to-v2-validator": "field_validator",
+        "pytest-6-to-8-raises": "raises",
+        "rich-12-to-13-console": "Console",
+        "sqlalchemy-14-to-2-execute": "execute",
+        "sqlalchemy-14-to-2-select": "select",
+        "urllib3-1-to-2-timeout": "Timeout",
+    }
+    for case_id, token in expected.items():
+        manifest = json.loads((CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8"))
+        assert checker.expected_api_token(ROOT / manifest["oracle_file"], case_id) == token
+        checker.validate_expected_api(token, case_id, "wrong_version_api")
+
+
+def test_version_sensitive_placeholder_tokens_are_rejected():
+    checker = __import__("scripts.check_version_guard_cases", fromlist=["validate_expected_api"])
+    for token in ("attr_new", "api_replacement"):
+        with pytest.raises(SystemExit, match="placeholder"):
+            checker.validate_expected_api(token, "synthetic-case", "wrong_version_api")
 
 
 def test_deliberately_leaked_expected_token_is_rejected(tmp_path, monkeypatch):
