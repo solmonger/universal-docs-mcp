@@ -88,6 +88,48 @@ def test_backup_conflict_is_zero_write(tmp_path: Path):
     assert (tmp_path / ".universal-docs/adapter.json").read_text() == '{"old":true}\n'
 
 
+def test_symlinked_backup_parent_is_rejected_before_any_write(tmp_path: Path):
+    external = tmp_path / "external-backups"
+    external.mkdir()
+    docs = tmp_path / ".universal-docs"
+    docs.mkdir()
+    old = b'{"old":true}\n'
+    adapter = docs / "adapter.json"
+    adapter.write_bytes(old)
+    (docs / "backups").symlink_to(external, target_is_directory=True)
+    dry_rc, dry_receipt = call(tmp_path)
+    assert dry_rc != 0 and dry_receipt["reason"] == "output_parent_invalid"
+    live_before = {path: path.read_bytes() for path in (adapter, tmp_path / "before/requirements.txt", tmp_path / "after/requirements.txt")}
+    external_before = set(external.iterdir())
+
+    rc, receipt = call(tmp_path, apply=True)
+
+    assert rc != 0 and receipt["reason"] == "output_parent_invalid"
+    assert set(external.iterdir()) == external_before == set()
+    assert {path: path.read_bytes() for path in live_before} == live_before
+
+
+@pytest.mark.parametrize("component", [".universal-docs", ".claude"])
+def test_symlinked_output_parent_is_rejected(tmp_path: Path, component: str):
+    external = tmp_path / f"external-{component[1:]}"
+    external.mkdir()
+    (tmp_path / component).symlink_to(external, target_is_directory=True)
+
+    rc, receipt = call(tmp_path, apply=True)
+
+    assert rc != 0 and receipt["reason"] == "output_parent_invalid"
+    assert not any(external.iterdir())
+
+
+@pytest.mark.parametrize("component", [".universal-docs", ".claude"])
+def test_special_output_parent_is_rejected(tmp_path: Path, component: str):
+    os.mkfifo(tmp_path / component)
+
+    rc, receipt = call(tmp_path, apply=True)
+
+    assert rc != 0 and receipt["reason"] == "output_parent_invalid"
+
+
 @pytest.mark.parametrize("name,content,reason", [
     ("settings.json", b"x" * (64 * 1024 + 1), "settings_not_regular"),
     ("adapter.json", b"x" * (64 * 1024 + 1), "adapter_invalid"),

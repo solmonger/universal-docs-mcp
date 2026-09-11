@@ -226,13 +226,23 @@ def _hook_command(hook: Path, adapter: Path) -> str:
     return shlex.join([str(hook), "--harness", "claude", "--config", str(adapter)])
 
 
-def _validate_output_parent(path: Path) -> None:
-    """Reject pre-existing output parents that could redirect writes."""
-    for parent in (path.parent, path.parent.parent):
-        if parent.exists():
-            info = parent.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise ValueError("output_parent_invalid")
+def _validate_output_parent(root: Path, path: Path) -> None:
+    """Reject existing output path components that could redirect writes."""
+    try:
+        relative_parent = path.parent.relative_to(root)
+    except ValueError:
+        raise ValueError("output_parent_invalid") from None
+    current = root
+    for component in relative_parent.parts:
+        current /= component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise ValueError("output_parent_invalid") from None
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError("output_parent_invalid")
 
 
 def _is_universal(command: Any) -> bool:
@@ -317,8 +327,9 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
     request = to_preflight_request(plan)
     adapter_path = root / ".universal-docs" / "adapter.json"
     settings_path = root / ".claude" / "settings.json"
-    _validate_output_parent(adapter_path)
-    _validate_output_parent(settings_path)
+    _validate_output_parent(root, adapter_path)
+    _validate_output_parent(root, settings_path)
+    _validate_output_parent(root, root / ".universal-docs" / "backups" / "_potential_backup.json")
     adapter = _json_bytes({"preflight_command": [str(preflight)], "request": request.model_dump(mode="json", exclude_none=True), "timeout_ms": 30_000})
     command = _hook_command(hook, adapter_path)
     settings, old_settings = _read_settings(settings_path)
@@ -351,12 +362,14 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
     backup_writes: list[tuple[Path, bytes, str]] = []
     if adapter_changed and old_adapter is not None:
         path = _backup_path(root, "adapter", old_adapter)
+        _validate_output_parent(root, path)
         _validate_backup(path, old_adapter, kind="adapter")
         backups.append({"kind": "adapter", "relative_path": str(path.relative_to(root)), "sha256": _sha256(old_adapter)})
         if not path.exists():
             backup_writes.append((path, old_adapter, "adapter"))
     if settings_changed and old_settings is not None:
         path = _backup_path(root, "settings", old_settings)
+        _validate_output_parent(root, path)
         _validate_backup(path, old_settings, kind="settings")
         backups.append({"kind": "settings", "relative_path": str(path.relative_to(root)), "sha256": _sha256(old_settings)})
         if not path.exists():
