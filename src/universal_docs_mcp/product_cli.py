@@ -13,16 +13,19 @@ import stat
 import subprocess
 import sys
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, BinaryIO, NoReturn
 
 from . import __version__
-from .command_hook import MAX_HOOK_OUTPUT_BYTES
+from .cache import DEFAULT_CACHE_DIR
+from .command_hook import MAX_HOOK_OUTPUT_BYTES, load_config
 from .planner import plan_dependency_changes, to_preflight_request
 
 MAX_OUTPUT_BYTES = 16 * 1024
 _DOCTOR_SCHEMA = "universal-docs.doctor/v1"
 _INIT_SCHEMA = "universal-docs.init/v1"
+_ROLLBACK_SCHEMA = "universal-docs.rollback/v1"
 _DOCTOR_MAX_FILE_BYTES = 64 * 1024
 
 
@@ -66,45 +69,82 @@ def _doctor_installation() -> dict[str, Any]:
 
 def _doctor_cache(root: Path) -> tuple[dict[str, Any], str]:
     configured = os.environ.get("UNIVERSAL_DOCS_CACHE_DIR")
-    cache = Path(configured).expanduser() if configured else Path.home() / ".cache" / "universal-docs-mcp"
+    cache = Path(configured).expanduser() if configured is not None else DEFAULT_CACHE_DIR
+    expected = root / ".universal-docs" / "cache"
     try:
+        if not cache.is_absolute() or cache.is_symlink() or (cache.exists() and not cache.is_dir()):
+            safe = False
+        else:
+            safe = cache.resolve(strict=False) == expected.resolve(strict=False)
         resolved = cache.resolve(strict=False)
-        safe = cache.is_absolute() and not cache.exists() or (cache.is_dir() and not cache.is_symlink())
-        isolated = safe and resolved == (root / ".universal-docs" / "cache").resolve(strict=False)
-        status = "pass" if isolated else "fail"
-        return {"scope": "project_installation" if isolated else "ambiguous_or_global", "identity": hashlib.sha256(str(resolved).encode()).hexdigest(), "available": safe}, status
+        return {"scope": "project_installation" if safe else "ambiguous_or_global", "identity": hashlib.sha256(str(resolved).encode()).hexdigest(), "available": safe}, "pass" if safe else "fail"
     except (OSError, RuntimeError):
         return {"scope": "unknown", "identity": None, "available": False}, "unknown"
 
 
 def _doctor_probe(hook: Path, adapter: Path, request: dict[str, Any] | None) -> tuple[dict[str, Any], str]:
     try:
+        config = load_config(adapter)
         command = [str(hook), "--harness", "claude", "--config", str(adapter)]
-        proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        timeout = min(max(config.timeout_ms / 1000.0, 0.1), 5.0)
+        proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, close_fds=True)
         try:
-            stdout, _stderr = proc.communicate(b"{}\n", timeout=45)
+            stdout, _stderr = proc.communicate(b"{}\n", timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(proc.pid, 9)
             except OSError:
                 proc.kill()
             proc.wait(timeout=2)
-            return {}, "probe_timeout"
+            return {"timeout_ms": int(timeout * 1000)}, "probe_timeout"
+        finally:
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, 9)
+                except OSError:
+                    proc.kill()
         if proc.returncode != 0:
             return {"returncode": proc.returncode}, "preflight_nonzero"
         if len(stdout) > MAX_HOOK_OUTPUT_BYTES:
             return {"stdout_bytes": len(stdout)}, "probe_output_too_large"
         payload = json.loads(stdout.decode("utf-8"), object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_json_constant)
         context = payload.get("hookSpecificOutput", {}).get("additionalContext") if isinstance(payload, dict) else None
-        if not isinstance(context, str) or "--- BEGIN UNTRUSTED DOCUMENTATION DATA ---" not in context or "--- END UNTRUSTED DOCUMENTATION DATA ---" not in context:
+        if not isinstance(context, str) or context.count("--- BEGIN UNTRUSTED DOCUMENTATION DATA ---") != 1 or context.count("--- END UNTRUSTED DOCUMENTATION DATA ---") != 1:
             return {"returncode": proc.returncode}, "source_less_or_malformed"
-        required = ["Source SHA-256:", "Source version binding:", "Freshness policy:", "Freshness state:"]
-        if request and request.get("package"):
-            required += [f"Target package: {json.dumps(request['package'])}", f"Target version: {json.dumps(request.get('requested_version') or request.get('version'))}"]
-        if any(token not in context for token in required):
+        fields = {}
+        for line in context.splitlines():
+            if ": " in line:
+                key, value = line.split(": ", 1)
+                if key in {"Target package", "Target version", "Source kind", "Source version binding", "Source SHA-256", "Freshness policy", "Freshness state"}:
+                    fields[key] = value
+        expected_package = json.dumps(request.get("package")) if request and request.get("package") else None
+        expected_version = json.dumps(request.get("requested_version") or request.get("version")) if request else None
+        if expected_package and fields.get("Target package") != expected_package or expected_version and fields.get("Target version") != expected_version:
             return {}, "source_metadata_mismatch"
-        digest = hashlib.sha256(context.encode()).hexdigest()
-        return {"returncode": 0, "packet_sha256": digest, "packet_bytes": len(stdout), "delimiters": True, "source_body_omitted": True}, "source_bearing"
+        source_sha = fields.get("Source SHA-256", "")
+        if len(source_sha) != 64 or any(c not in "0123456789abcdef" for c in source_sha):
+            return {}, "source_metadata_mismatch"
+        freshness_policy = fields.get("Freshness policy", "")
+        freshness_state = fields.get("Freshness state", "")
+        try:
+            freshness_policy = json.loads(freshness_policy)
+            freshness_state = json.loads(freshness_state)
+        except (TypeError, json.JSONDecodeError):
+            pass
+        if freshness_policy != (request or {}).get("freshness_mode") or freshness_state != "upstream_checked":
+            return {}, "source_metadata_mismatch"
+        mode = "fixture" if any(os.environ.get("UNIVERSAL_DOCS_INIT_" + n.replace("-", "_").upper()) for n in (_HOOK_NAME, _PREFLIGHT_NAME)) else "live_registry"
+        def packet_value(key: str) -> str | None:
+            value = fields.get(key)
+            if value is None:
+                return None
+            try:
+                decoded = json.loads(value)
+            except (TypeError, json.JSONDecodeError):
+                return value
+            return decoded if isinstance(decoded, str) else value
+
+        return {"returncode": 0, "probe_mode": mode, "package": request.get("package") if request else None, "version": request.get("requested_version") if request else None, "source_kind": packet_value("Source kind"), "source_version_binding": packet_value("Source version binding"), "source_sha256": source_sha, "freshness_policy": freshness_policy, "freshness_state": freshness_state, "packet_sha256": hashlib.sha256(context.encode()).hexdigest(), "packet_bytes": len(stdout), "source_body_omitted": True}, "source_bearing"
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return {}, "probe_malformed"
 
@@ -122,21 +162,21 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
     hook = _installation_executable(_HOOK_NAME)
     preflight = _installation_executable(_PREFLIGHT_NAME)
     executable_ok = all(path.is_absolute() and path.exists() and path.is_file() and not path.is_symlink() and os.access(path, os.X_OK) for path in (hook, preflight))
-    checks.append(_doctor_check("executables", "pass" if executable_ok else "fail", "regular_current_installation" if executable_ok else "executable_invalid", hook=str(hook), preflight=str(preflight)))
+    override_used = any(os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper()) for name in (_HOOK_NAME, _PREFLIGHT_NAME))
+    checks.append(_doctor_check("executables", "pass" if executable_ok else "fail", "fixture_override" if executable_ok and override_used else ("regular_current_installation" if executable_ok else "executable_invalid"), hook=str(hook), preflight=str(preflight), provenance="fixture" if override_used else "installed"))
     cache, cache_status = _doctor_cache(root)
     checks.append(_doctor_check("cache_scope", cache_status, "explicit_project_installation" if cache_status == "pass" else "cache_scope_unsafe", scope=cache["scope"], identity=cache["identity"], available=cache["available"]))
     hook_count = 0
     expected_command = _hook_command(hook, adapter_path)
     def is_universal_item(item: Any) -> bool:
         command = item.get("command") if isinstance(item, dict) else None
-        if _is_universal(command):
-            return True
         if not isinstance(command, str):
             return False
         try:
-            return bool(shlex.split(command) and shlex.split(command)[0] == str(hook))
+            tokens = shlex.split(command)
         except ValueError:
             return False
+        return bool(tokens and tokens[0] == str(hook))
 
     if settings and isinstance(settings.get("hooks"), dict) and isinstance(settings["hooks"].get("UserPromptSubmit"), list):
         for group in settings["hooks"]["UserPromptSubmit"]:
@@ -147,13 +187,81 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
         actual = next(item["command"] for group in settings["hooks"]["UserPromptSubmit"] for item in group["hooks"] if is_universal_item(item))
         hook_ok = actual == expected_command
     checks.append(_doctor_check("harness_seam", "pass" if hook_ok else "fail", "exact_hook" if hook_ok else "hook_missing_conflicting_or_mismatched", count=hook_count))
-    adapter_ok = bool(adapter and adapter.get("preflight_command") == [str(preflight)] and adapter.get("timeout_ms") == 30000)
-    checks.append(_doctor_check("adapter_contract", "pass" if adapter_ok else "fail", "exact_contract" if adapter_ok else "adapter_contract_mismatch"))
+    adapter_ok = False
+    adapter_reason = "adapter_contract_mismatch"
+    if adapter is not None and adapter_error is None:
+        try:
+            parsed = load_config(adapter_path)
+            adapter_ok = parsed.command == (str(preflight),) and parsed.timeout_ms == 30_000 and isinstance(adapter.get("request"), dict)
+            adapter_reason = "exact_contract" if adapter_ok else "adapter_contract_mismatch"
+        except (OSError, ValueError, TypeError):
+            adapter_reason = "adapter_contract_invalid"
+    checks.append(_doctor_check("adapter_contract", "pass" if adapter_ok else "fail", adapter_reason))
     probe_meta, probe_reason = _doctor_probe(hook, adapter_path, adapter.get("request") if isinstance(adapter, dict) else None) if hook_ok and adapter_ok and executable_ok else ({}, "probe_prerequisite_failed")
     checks.append(_doctor_check("source_probe", "pass" if probe_reason == "source_bearing" else "fail", probe_reason, **probe_meta))
     status = "pass" if all(c["status"] == "pass" for c in checks) else "fail"
-    receipt = {"schema": _DOCTOR_SCHEMA, "status": status, "checks": checks, "cache": cache, "source_probe": probe_meta, "rollback": {"instructions": "Remove only .universal-docs/adapter.json and the Universal Docs UserPromptSubmit hook; restore only the hash-bound settings backup.", "command": "universal-docs rollback --adapter .universal-docs/adapter.json --hook UserPromptSubmit --backup-sha256 <recorded-hash>"}}
+    receipt = {"schema": _DOCTOR_SCHEMA, "status": status, "checks": checks, "cache": cache, "source_probe": probe_meta, "rollback": {"instructions": "Remove only .universal-docs/adapter.json and the Universal Docs UserPromptSubmit hook; restore only the hash-bound settings backup.", "command": "universal-docs rollback --project-root ABSOLUTE --apply"}}
     return receipt, 0 if status == "pass" else 1
+def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
+    adapter_path = root / ".universal-docs" / "adapter.json"
+    settings_path = root / ".claude" / "settings.json"
+    backup_dir = root / ".universal-docs" / "backups"
+    settings, settings_raw, settings_error = _doctor_read_json(settings_path, "settings")
+    adapter_raw = _read_existing(adapter_path, missing=None, reason="adapter_invalid")
+    if settings_error or settings is None:
+        raise ValueError("rollback_state_invalid")
+    if adapter_raw is None:
+        event = settings.get("hooks", {}).get("UserPromptSubmit") if isinstance(settings.get("hooks"), dict) else None
+        if not any(isinstance(group, dict) and any(isinstance(item, dict) and _HOOK_NAME in str(item.get("command", "")) for item in group.get("hooks", [])) for group in event or []):
+            return {"schema": _ROLLBACK_SCHEMA, "mode": "apply" if apply else "dry-run", "status": "selected", "reason": "already_rolled_back", "changed": False}, 0
+    hook = _installation_executable(_HOOK_NAME)
+    expected = _hook_command(hook, adapter_path)
+    event = settings.get("hooks", {}).get("UserPromptSubmit") if isinstance(settings.get("hooks"), dict) else None
+    matches: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    if isinstance(event, list):
+        for group in event:
+            items = group.get("hooks") if isinstance(group, dict) else None
+            if isinstance(items, list):
+                found = [item for item in items if isinstance(item, dict) and item.get("type") == "command" and item.get("command") == expected]
+                if found:
+                    matches.append((group, found))
+    if sum(len(found) for _, found in matches) != 1:
+        raise ValueError("rollback_hook_ambiguous_or_missing")
+    candidates = sorted(backup_dir.glob("settings-*.json")) if backup_dir.is_dir() else []
+    if len(candidates) > 1:
+        raise ValueError("rollback_backup_ambiguous")
+    restored = None
+    if candidates:
+        restored = _read_existing(candidates[0], missing=None, reason="settings_backup_invalid")
+        if restored is None or _sha256(restored) != candidates[0].stem.removeprefix("settings-"):
+            raise ValueError("rollback_backup_invalid")
+    new_settings = deepcopy(settings)
+    new_event = new_settings["hooks"]["UserPromptSubmit"]
+    for group in new_event:
+        if isinstance(group, dict) and isinstance(group.get("hooks"), list):
+            group["hooks"] = [item for item in group["hooks"] if not (isinstance(item, dict) and item.get("type") == "command" and item.get("command") == expected)]
+    new_settings["hooks"]["UserPromptSubmit"] = [group for group in new_event if group.get("hooks") if isinstance(group, dict)]
+    new_settings_raw = _json_bytes(new_settings)
+    receipt = {"schema": _ROLLBACK_SCHEMA, "mode": "apply" if apply else "dry-run", "status": "selected", "reason": "exact_hook_and_bound_backup", "changed": bool(settings_raw != new_settings_raw or adapter_raw is not None), "removed": {"hook": True, "adapter": True}, "backup_sha256": _sha256(restored) if restored else None}
+    if apply:
+        old_adapter_stat = adapter_path.stat()
+        old_settings_stat = settings_path.stat()
+        try:
+            _atomic_write(settings_path, new_settings_raw)
+            _restore_file(adapter_path, None, None, None)
+        except (OSError, RuntimeError, ValueError):
+            try:
+                _atomic_write(settings_path, settings_raw)
+                os.chmod(settings_path, stat.S_IMODE(old_settings_stat.st_mode))
+                if adapter_raw is not None:
+                    _atomic_write(adapter_path, adapter_raw)
+                os.chmod(adapter_path, stat.S_IMODE(old_adapter_stat.st_mode))
+            except OSError:
+                pass
+            raise ValueError("rollback_failed") from None
+    return receipt, 0
+
+
 _HOOK_NAME = "universal-docs-command-hook"
 _PREFLIGHT_NAME = "universal-docs-preflight"
 _INIT_ERROR_REASONS = {
@@ -188,6 +296,9 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--apply", action="store_true")
     doctor = commands.add_parser("doctor", add_help=False)
     doctor.add_argument("--project-root", required=True, type=Path)
+    rollback = commands.add_parser("rollback", add_help=False)
+    rollback.add_argument("--project-root", required=True, type=Path)
+    rollback.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -517,6 +628,7 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
         receipt["backups"] = backups
 
     if args.apply and changed:
+        (root / ".universal-docs" / "cache").mkdir(mode=0o700, parents=True, exist_ok=True)
         adapter_stat = adapter_path.stat() if old_adapter is not None else None
         try:
             for path, raw, kind in backup_writes:
@@ -551,6 +663,7 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
     """Emit exactly one bounded JSON object and no diagnostics."""
     output = stdout or sys.stdout.buffer
     args: argparse.Namespace | None = None
+    raw_argv = argv if argv is not None else sys.argv[1:]
     try:
         args = _parser().parse_args(argv)
         if args.command == "plan":
@@ -568,14 +681,27 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
             payload, code = _doctor_receipt(root)
             _emit(payload, output, schema=_DOCTOR_SCHEMA)
             return code
+        elif args.command == "rollback":
+            root = _validate_root(args.project_root, absolute_required=True)
+            payload, code = _rollback_receipt(root, args.apply)
+            _emit(payload, output, schema=_ROLLBACK_SCHEMA)
+            return code
         else:
             raise ValueError("command_required")
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        if args is not None and args.command == "init":
+        command = args.command if args is not None else (raw_argv[0] if raw_argv else None)
+        if command == "doctor":
+            _emit({"schema": _DOCTOR_SCHEMA, "status": "fail", "reason": str(exc) or "doctor_invalid"}, output, schema=_DOCTOR_SCHEMA)
+            return 1
+        if command == "rollback":
+            _emit({"schema": _ROLLBACK_SCHEMA, "status": "fail", "reason": str(exc) or "rollback_invalid"}, output, schema=_ROLLBACK_SCHEMA)
+            return 1
+        if command == "init":
             reason = str(exc)
             if reason not in _INIT_ERROR_REASONS:
                 reason = "write_failed" if args.apply else "init_invalid"
-            _emit({"schema": _INIT_SCHEMA, "mode": "apply" if args.apply else "dry-run", "status": "abstained", "reason": reason}, output)
+            mode = "apply" if getattr(args, "apply", False) else "dry-run"
+            _emit({"schema": _INIT_SCHEMA, "mode": mode, "status": "abstained", "reason": reason}, output)
             return 1
         payload = _error("invalid_plan_request")
     _emit(payload, output)
