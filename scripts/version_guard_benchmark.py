@@ -8,15 +8,28 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
 SCHEMA = "universal-docs.benchmark/v1"
 ARMS = ("control", "manual", "automatic")
+MAX_MANIFEST_BYTES = 256 * 1024
+MAX_CASES = 100
+MAX_CASE_KEYS = 12
+MAX_STRING_BYTES = 16 * 1024
+MAX_ARGV_ITEMS = 32
+MAX_ARG_BYTES = 4 * 1024
+MAX_CONTEXT_BYTES = 64 * 1024
+MAX_FIXTURE_FILES = 256
+MAX_FIXTURE_FILE_BYTES = 256 * 1024
+MAX_FIXTURE_TOTAL_BYTES = 2 * 1024 * 1024
+MAX_SUBPROCESS_OUTPUT_BYTES = 64 * 1024
 _SECRET = re.compile(
     r"(?i)(token|secret|password|api[_-]?key|authorization)([=:])([^\s,;]+)"
 )
@@ -49,41 +62,65 @@ def _relative_path(root: Path, value: str, label: str) -> Path:
     return resolved
 
 
+def _bounded_string(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise BenchmarkError(f"{label} must be a non-empty string")
+    if len(value.encode("utf-8")) > MAX_STRING_BYTES:
+        raise BenchmarkError(f"{label} exceeds bounded manifest string size")
+    return value
+
+
 def _argv(value: Any, label: str) -> list[str]:
-    if not isinstance(value, list) or not value or any(
-        not isinstance(item, str) or not item or "\x00" in item for item in value
-    ):
-        raise BenchmarkError(f"{label} must be a non-empty argv array")
-    return list(value)
+    if not isinstance(value, list) or not value or len(value) > MAX_ARGV_ITEMS:
+        raise BenchmarkError(f"{label} must contain 1..{MAX_ARGV_ITEMS} arguments")
+    result = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item or "\x00" in item:
+            raise BenchmarkError(f"{label}[{index}] must be a non-empty string")
+        if len(item.encode("utf-8")) > MAX_ARG_BYTES:
+            raise BenchmarkError(f"{label}[{index}] exceeds bounded argument size")
+        result.append(item)
+    return result
 
 
 def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
     if not isinstance(manifest, dict) or not isinstance(manifest.get("cases"), list):
         raise BenchmarkError("manifest must contain a cases array")
-    if not manifest["cases"] or len(manifest["cases"]) > 100:
-        raise BenchmarkError("manifest cases must contain 1..100 entries")
+    if not manifest["cases"] or len(manifest["cases"]) > MAX_CASES:
+        raise BenchmarkError(f"manifest cases must contain 1..{MAX_CASES} entries")
     cases = []
     seen: set[str] = set()
+    required = {"id", "ecosystem", "package", "target_version", "task", "workspace_fixture", "test_command"}
+    optional = {"context_files", "manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class"}
     for raw in manifest["cases"]:
         if not isinstance(raw, dict):
             raise BenchmarkError("each case must be an object")
-        required = ("id", "ecosystem", "package", "target_version", "task", "workspace_fixture", "test_command")
-        if any(key not in raw for key in required):
+        if len(raw) > MAX_CASE_KEYS or not set(raw) <= required | optional:
+            raise BenchmarkError("case keys exceed the strict allowed set")
+        if not required <= set(raw):
             raise BenchmarkError("case is missing a required field")
-        case_id = raw["id"]
-        if not isinstance(case_id, str) or not case_id or case_id in seen or len(case_id) > 160:
+        case_id = _bounded_string(raw["id"], "case id")
+        if case_id in seen:
             raise BenchmarkError("case ids must be unique, non-empty strings")
         seen.add(case_id)
-        if not all(isinstance(raw[key], str) and raw[key] for key in required if key != "test_command"):
-            raise BenchmarkError(f"invalid scalar field in case {case_id}")
-        fixture_value = raw["workspace_fixture"]
-        fixture_path = Path(fixture_value)
+        for key in required - {"test_command"}:
+            _bounded_string(raw[key], f"case {case_id} {key}")
+        fixture_path = Path(raw["workspace_fixture"])
         if fixture_path.is_absolute() or ".." in fixture_path.parts:
             raise BenchmarkError(f"case {case_id} workspace_fixture must be relative")
         case = dict(raw)
         case["test_command"] = _argv(raw["test_command"], f"case {case_id} test_command")
-        if "context_files" in raw and not isinstance(raw["context_files"], dict):
-            raise BenchmarkError(f"case {case_id} context_files must be an object")
+        if "context_files" in raw:
+            values = raw["context_files"]
+            if not isinstance(values, dict) or len(values) > len(ARMS):
+                raise BenchmarkError(f"case {case_id} context_files must be a bounded object")
+            for arm, value in values.items():
+                if arm not in ARMS:
+                    raise BenchmarkError(f"case {case_id} context_files has unknown arm")
+                _bounded_string(value, f"case {case_id} {arm} context file")
+        for key in ("manual_context_file", "automatic_context_file", "context_profile", "expected_failure_class"):
+            if key in raw:
+                _bounded_string(raw[key], f"case {case_id} {key}")
         cases.append(case)
     return cases
 
@@ -96,6 +133,30 @@ def _context_value(case: dict[str, Any], arm: str) -> str | None:
     if value is not None and (not isinstance(value, str) or not value):
         raise BenchmarkError(f"case {case['id']} {arm} context file is invalid")
     return value
+
+
+def _validate_fixture_tree(root: Path) -> None:
+    files = 0
+    total = 0
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if ".benchmark" in relative.parts:
+            continue
+        info = path.lstat()
+        if path.is_symlink():
+            raise BenchmarkError(f"fixture symlink is not allowed: {relative}")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise BenchmarkError(f"fixture special file is not allowed: {relative}")
+        files += 1
+        if files > MAX_FIXTURE_FILES:
+            raise BenchmarkError("fixture file count exceeds bound")
+        if info.st_size > MAX_FIXTURE_FILE_BYTES:
+            raise BenchmarkError(f"fixture file exceeds bound: {relative}")
+        total += info.st_size
+        if total > MAX_FIXTURE_TOTAL_BYTES:
+            raise BenchmarkError("fixture total bytes exceed bound")
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:
@@ -120,8 +181,67 @@ def _diff_hash(before: dict[str, bytes], after: dict[str, bytes]) -> str:
 def _context_info(path: Path | None) -> tuple[str | None, int]:
     if path is None:
         return None, 0
+    info = path.lstat()
+    if not path.is_file() or path.is_symlink():
+        raise BenchmarkError("context file must be a regular file")
+    if info.st_size > MAX_CONTEXT_BYTES:
+        raise BenchmarkError("context file exceeds bounded bytes")
     data = path.read_bytes()
     return _sha256(data), len(data)
+
+
+def _run_bounded(
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float
+) -> dict[str, Any]:
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        shell=False,
+        start_new_session=(os.name == "posix"),
+    )
+    digest = hashlib.sha256()
+    captured = bytearray()
+    truncated = False
+
+    def drain() -> None:
+        nonlocal truncated
+        assert process.stdout is not None
+        while True:
+            chunk = process.stdout.read(65536)
+            if not chunk:
+                return
+            remaining = MAX_SUBPROCESS_OUTPUT_BYTES - len(captured)
+            if remaining > 0:
+                kept = chunk[:remaining]
+                captured.extend(kept)
+                digest.update(kept)
+            if len(chunk) > max(remaining, 0):
+                truncated = True
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+        process.wait()
+    reader.join()
+    return {
+        "returncode": None if timed_out else process.returncode,
+        "status": "timeout" if timed_out else ("passed" if process.returncode == 0 else "failed"),
+        "output_sha256": digest.hexdigest(),
+        "output_bytes": len(captured),
+        "output_truncated": truncated,
+    }
 
 
 def _env(workspace: Path) -> dict[str, str]:
@@ -169,10 +289,12 @@ def run_case(
     fixture = _relative_path(fixture_root, case["workspace_fixture"], "workspace_fixture")
     if not fixture.is_dir():
         raise BenchmarkError(f"workspace fixture not found for {case['id']}")
+    _validate_fixture_tree(fixture)
     context_name = _context_value(case, arm)
     context = None if context_name is None else _relative_path(manifest_root, context_name, "context file")
     if context is not None and not context.is_file():
         raise BenchmarkError(f"context file not found for {case['id']}")
+    context_sha256, context_bytes = _context_info(context)
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="version-guard-benchmark-") as temporary:
@@ -180,29 +302,17 @@ def run_case(
         shutil.copytree(fixture, workspace)
         _write_inputs(workspace, case, context)
         before = _snapshot(workspace)
-        context_sha256, context_bytes = _context_info(context)
         agent_status = "passed"
         agent_error = None
+        agent_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
         try:
-            completed = subprocess.run(
-                agent_argv,
-                cwd=workspace,
-                env=_env(workspace),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout_seconds,
-                check=False,
-                shell=False,
-                text=False,
+            agent_output = _run_bounded(
+                agent_argv, cwd=workspace, env=_env(workspace), timeout=timeout_seconds
             )
-            agent_exit = completed.returncode
-            if agent_exit != 0:
-                agent_status = "failed"
-        except subprocess.TimeoutExpired:
-            agent_status = "timeout"
-            agent_exit = None
-            agent_error = "agent_timeout"
+            agent_exit = agent_output["returncode"]
+            agent_status = agent_output["status"]
+            if agent_status == "timeout":
+                agent_error = "agent_timeout"
         except (FileNotFoundError, OSError):
             agent_status = "error"
             agent_exit = None
@@ -210,27 +320,17 @@ def run_case(
 
         test_status = "not_run"
         test_exit = None
-        test_output = b""
+        test_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
         if agent_status == "passed":
             try:
-                tested = subprocess.run(
+                test_output = _run_bounded(
                     _argv(case["test_command"], "test_command"),
                     cwd=workspace,
                     env=_env(workspace),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
                     timeout=timeout_seconds,
-                    check=False,
-                    shell=False,
-                    text=False,
                 )
-                test_exit = tested.returncode
-                test_output = tested.stdout
-                test_status = "passed" if test_exit == 0 else "failed"
-            except subprocess.TimeoutExpired as exc:
-                test_status = "timeout"
-                test_output = (exc.stdout or b"") if isinstance(exc.stdout, bytes) else b""
+                test_exit = test_output["returncode"]
+                test_status = test_output["status"]
             except (FileNotFoundError, OSError):
                 test_status = "error"
         after = _snapshot(workspace)
@@ -251,7 +351,9 @@ def run_case(
                 "command": [_safe_text(item) for item in case["test_command"]],
                 "command_status": test_status,
                 "exit_code": test_exit,
-                "output_sha256": _sha256(test_output),
+                "output_sha256": test_output["output_sha256"],
+                "output_bytes": test_output["output_bytes"],
+                "output_truncated": test_output["output_truncated"],
             },
             "elapsed_seconds": round(time.monotonic() - started, 6),
         }
@@ -361,7 +463,10 @@ def _main() -> int:
     agent_argv = (
         json.loads(args.agent_command_json) if args.agent_command_json else args.agent_command
     )
-    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    manifest_bytes = args.manifest.read_bytes()
+    if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+        raise BenchmarkError("manifest_too_large")
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
     report = run_benchmark(
         manifest,
         args.fixture_root,
