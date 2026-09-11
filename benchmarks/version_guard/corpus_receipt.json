@@ -140,6 +140,6 @@
     "general_coding_error": 1,
     "wrong_version_api": 11
   },
-  "corpus_sha256": "a6a1e74826fa2e859f26744288fe1207b9f47fcabcbac7fad01e5eb6e7e4a38a",
+  "corpus_sha256": "57a8ca7b12b54aaa7f781c03a2676c4961bb317c14a19195f6657e15f2ff7d35",
   "schema": "universal-docs.corpus-receipt/v1"
 }
