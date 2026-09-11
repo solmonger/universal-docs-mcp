@@ -424,15 +424,19 @@ def test_source_backed_invalid_inputs_fail_closed(tmp_path):
     )
 
 
-def test_source_backed_query_and_symbols_are_bounded(tmp_path):
+def test_source_backed_overlong_attribute_abstains_without_fabrication(tmp_path):
     before, after = write_pair(tmp_path, "rich==13.6.0\n", "rich==13.7.1\n")
-    (tmp_path / "app.py").write_text("import rich\n" + "rich." + "x" * 1000 + "\n")
+    identifier = "x" * 70
+    (tmp_path / "app.py").write_text(f"import rich\nrich.{identifier}\n")
     plan = plan_dependency_changes(
         before, after, project_root=tmp_path, task="x", source_paths=("app.py",)
     )
-    assert plan.status == "selected"
-    assert len(plan.as_dict()["query"]) <= 512
-    assert len(plan.as_dict()["selection"]["symbols"]) <= 24
+    payload = plan.as_dict()
+    assert plan.status == "abstained"
+    assert plan.reason == "task_signal_not_found"
+    assert payload["query"] is None
+    assert "selection" not in payload
+    assert identifier not in str(payload)
 
 
 def test_checker_addendum_empty_task_does_not_fall_back_generic(tmp_path):

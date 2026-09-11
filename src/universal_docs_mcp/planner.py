@@ -449,9 +449,9 @@ def _source_signal(
             ):
                 func = node.func
                 while isinstance(func, ast.Attribute):
-                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", func.attr):
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", func.attr):
                         # Attributes and the called name are both useful terms.
-                        symbols.add(func.attr[:64])
+                        symbols.add(func.attr)
                     func = func.value
                 if isinstance(node.func, ast.Name):
                     symbols.add(node.func.id)
@@ -463,8 +463,8 @@ def _source_signal(
             if isinstance(node, ast.Attribute) and _attribute_root(node) in tracked:
                 attribute = node
                 while isinstance(attribute, ast.Attribute):
-                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", attribute.attr):
-                        symbols.add(attribute.attr[:64])
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", attribute.attr):
+                        symbols.add(attribute.attr)
                     attribute = attribute.value
     symbols.update(
         v.rsplit(".", 1)[-1] for v in aliases.values() if v and v != import_name
