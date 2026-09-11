@@ -1,0 +1,16 @@
+{
+  "id": "click-7-to-8-parameter",
+  "ecosystem": "python",
+  "package": "click",
+  "target_version": "8.1.7",
+  "task": "Update command parameter declaration to the Click 8 contract.",
+  "workspace_fixture": "benchmarks/version_guard/fixtures/click-7-to-8-parameter",
+  "test_command": [
+    "python",
+    "oracle.py"
+  ],
+  "context_profile": "readme",
+  "expected_failure_class": "wrong_version_api",
+  "evidence_type": "synthetic_stub",
+  "evidence_note": "Synthetic local API stub for Click 7/8 parameter semantics; not live-package evidence."
+}

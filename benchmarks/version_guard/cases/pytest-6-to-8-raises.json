@@ -1,0 +1,16 @@
+{
+  "id": "pytest-6-to-8-raises",
+  "ecosystem": "python",
+  "package": "pytest",
+  "target_version": "8.2.0",
+  "task": "Update exception assertion to the pytest 8 contract.",
+  "workspace_fixture": "benchmarks/version_guard/fixtures/pytest-6-to-8-raises",
+  "test_command": [
+    "python",
+    "oracle.py"
+  ],
+  "context_profile": "readme",
+  "expected_failure_class": "wrong_version_api",
+  "evidence_type": "synthetic_stub",
+  "evidence_note": "Synthetic local API stub for pytest 6/8 assertion semantics; not live-package evidence."
+}
