@@ -1,7 +1,7 @@
 [project]
 name = "universal-docs-mcp"
-version = "0.1.0"
-description = "MCP server that fetches latest stable release documentation for any programming language, framework, or package"
+version = "0.4.0rc2"
+description = "Local MCP server for version-aware PyPI, npm and crates.io README retrieval"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -17,22 +17,34 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "mcp>=1.0.0",
-    "httpx>=0.27.0",
-    "pydantic>=2.0.0",
-    "packaging>=23.0",
+    "mcp>=1.26.0,<2",
+    "httpx>=0.27.0,<0.29",
+    "pydantic>=2.11,<3",
+    "packaging>=23.0,<27",
+    "tomli>=2.0.0,<3; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "ruff==0.16.6", "build>=1,<2", "hatchling>=1.27,<2"]
 
 [project.scripts]
+universal-docs = "universal_docs_mcp.product_cli:main"
 universal-docs-mcp = "universal_docs_mcp.server:main"
+universal-docs-preflight = "universal_docs_mcp.preflight:main"
+universal-docs-command-hook = "universal_docs_mcp.command_hook:main"
+universal-docs-context = "universal_docs_mcp.context_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = ["live: opt-in public registry/network integration tests"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27,<2"]
 build-backend = "hatchling.build"

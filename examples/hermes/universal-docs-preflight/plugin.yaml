@@ -1,0 +1,35 @@
+manifest_version: 2
+name: universal-docs-preflight
+version: "0.3.0"
+description: Inject static or automatic exact-version documentation context once per Hermes turn.
+author: Hermes Agent
+tags: [documentation, hooks, preflight]
+kind: standalone
+capabilities: [hooks]
+provides_hooks: [pre_llm_call]
+hooks: [pre_llm_call]
+config_schema:
+  mode:
+    type: string
+    default: static
+    description: static uses request_file; native plans from Hermes-owned session cwd and current task.
+  disabled_profiles:
+    type: string
+    default: ""
+    description: Comma-separated exact profile names that must not register this hook.
+  cache_dir:
+    type: string
+    required: false
+    description: Absolute canonical Universal Docs cache directory used for retrieval evidence.
+  executable:
+    type: string
+    required: true
+    description: Absolute regular-file path to the reviewed universal-docs-context CLI.
+  request_file:
+    type: string
+    required: false
+    description: Absolute trusted JSON request file required only in static mode; never chosen from a hook payload.
+  timeout_ms:
+    type: integer
+    default: 3000
+    description: Outer process deadline (100–10000 ms); keep below host hook timeout.

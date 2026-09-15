@@ -1,0 +1,18 @@
+{
+  "context_profile": "readme",
+  "ecosystem": "python",
+  "evidence_note": "Synthetic local API stub for pytest version semantics; not live-package evidence.",
+  "evidence_type": "synthetic_stub",
+  "expected_failure_class": "wrong_version_api",
+  "id": "pytest-6-to-8-raises",
+  "oracle_file": "benchmarks/version_guard/oracles/pytest-6-to-8-raises.py",
+  "package": "pytest",
+  "target_version": "8.2.0",
+  "task": "Update the pytest integration to the target contract without relying on unstated details.",
+  "test_command": [
+    "python3",
+    "-c",
+    "pass"
+  ],
+  "workspace_fixture": "benchmarks/version_guard/fixtures/pytest-6-to-8-raises"
+}

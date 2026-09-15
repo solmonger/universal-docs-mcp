@@ -1,7 +1,15 @@
 """Tests for package registry clients."""
 
 import pytest
-from universal_docs_mcp.registries import fetch_pypi, fetch_npm, fetch_crates, fetch_package
+
+from universal_docs_mcp.registries import (
+    fetch_crates,
+    fetch_npm,
+    fetch_package,
+    fetch_pypi,
+)
+
+pytestmark = pytest.mark.live
 
 
 @pytest.mark.asyncio

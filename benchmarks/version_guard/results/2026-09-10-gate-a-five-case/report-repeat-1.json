@@ -1,0 +1,350 @@
+{
+  "aggregate": {
+    "by_arm": {
+      "automatic": 0,
+      "control": 2,
+      "manual": 4
+    },
+    "cases": 10,
+    "errors": 0,
+    "failed": 4,
+    "passed": 6,
+    "timeouts": 0
+  },
+  "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+  "model": "gpt-5.6-luna",
+  "provider": "openai-codex",
+  "results": [
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "control",
+      "context_bytes": 0,
+      "context_sha256": null,
+      "ecosystem": "python",
+      "elapsed_seconds": 17.194717,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "pydantic-v1-to-v2-model-dump",
+      "model": "gpt-5.6-luna",
+      "package": "pydantic",
+      "provider": "openai-codex",
+      "target_version": "2.6.1",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "passed",
+        "exit_code": 0,
+        "oracle_bytes": 1754,
+        "oracle_sha256": "44867007cfc071b8742b99e138b394c94a118f29c78cf8a39e35876fea7cf09e",
+        "output_bytes": 111,
+        "output_sha256": "b71d73a4124f1b323340a94dd75681ea256745e605e870d87b92ba335a28b7b9",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "e9d2f3abba1f9e426007c439a2911b41cfe2b01076fdc86dcd69b14e9736665f"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "manual",
+      "context_bytes": 667,
+      "context_sha256": "a7b70ba26ef704ab7f524b544b3074748909855ed60126133d053e511dcd3e84",
+      "ecosystem": "python",
+      "elapsed_seconds": 22.57936,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "pydantic-v1-to-v2-model-dump",
+      "model": "gpt-5.6-luna",
+      "package": "pydantic",
+      "provider": "openai-codex",
+      "target_version": "2.6.1",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "passed",
+        "exit_code": 0,
+        "oracle_bytes": 1754,
+        "oracle_sha256": "44867007cfc071b8742b99e138b394c94a118f29c78cf8a39e35876fea7cf09e",
+        "output_bytes": 111,
+        "output_sha256": "b71d73a4124f1b323340a94dd75681ea256745e605e870d87b92ba335a28b7b9",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "e9d2f3abba1f9e426007c439a2911b41cfe2b01076fdc86dcd69b14e9736665f"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "control",
+      "context_bytes": 0,
+      "context_sha256": null,
+      "ecosystem": "python",
+      "elapsed_seconds": 28.511653,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "pydantic-v1-to-v2-validator",
+      "model": "gpt-5.6-luna",
+      "package": "pydantic",
+      "provider": "openai-codex",
+      "target_version": "2.6.1",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "failed",
+        "exit_code": 2,
+        "oracle_bytes": 2980,
+        "oracle_sha256": "42ee2976948816a75de3518b64349184253f052cb63e51b9533107cc65f77927",
+        "output_bytes": 152,
+        "output_sha256": "6470ce4d8e52112e7c580fa7e21d6b5e0b931655231390bf17dcc3fa7a5d4d55",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "878d078b347eb1eaae35bb02eb33f6b6424160e6f16dbd8986edeece1b4cfb96"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "manual",
+      "context_bytes": 740,
+      "context_sha256": "3ac90dc55b6e11abf66c587d20896825bab67cc1de0a76b613c3fccd3ffb6b67",
+      "ecosystem": "python",
+      "elapsed_seconds": 25.889464,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "pydantic-v1-to-v2-validator",
+      "model": "gpt-5.6-luna",
+      "package": "pydantic",
+      "provider": "openai-codex",
+      "target_version": "2.6.1",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "failed",
+        "exit_code": 2,
+        "oracle_bytes": 2980,
+        "oracle_sha256": "42ee2976948816a75de3518b64349184253f052cb63e51b9533107cc65f77927",
+        "output_bytes": 152,
+        "output_sha256": "6470ce4d8e52112e7c580fa7e21d6b5e0b931655231390bf17dcc3fa7a5d4d55",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "d1bddda24be4cb9b1ddeff1d21fe3e9a307bfe4b51b028df1384e21605b77da5"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "control",
+      "context_bytes": 0,
+      "context_sha256": null,
+      "ecosystem": "python",
+      "elapsed_seconds": 23.243898,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "rich-12-to-13-console",
+      "model": "gpt-5.6-luna",
+      "package": "rich",
+      "provider": "openai-codex",
+      "target_version": "13.7.1",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "failed",
+        "exit_code": 2,
+        "oracle_bytes": 2555,
+        "oracle_sha256": "cba9f100d0f15826dd15c6c95a6230cdebd753ea63236be7a145f132a7349b9d",
+        "output_bytes": 148,
+        "output_sha256": "15399be7006aba519e25fe7e50c5112e6b04c1d0e9585cf43036673cc8c65732",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "05939aebb9d7e704cd52c17a3b198d17dc93a2818847767e39731cc1cd26914b"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "manual",
+      "context_bytes": 543,
+      "context_sha256": "681ec89871b68340e0f716fc137105ef9fe82896ef1e6af551c9a32b868b2ee1",
+      "ecosystem": "python",
+      "elapsed_seconds": 20.846762,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "rich-12-to-13-console",
+      "model": "gpt-5.6-luna",
+      "package": "rich",
+      "provider": "openai-codex",
+      "target_version": "13.7.1",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "passed",
+        "exit_code": 0,
+        "oracle_bytes": 2555,
+        "oracle_sha256": "cba9f100d0f15826dd15c6c95a6230cdebd753ea63236be7a145f132a7349b9d",
+        "output_bytes": 104,
+        "output_sha256": "fc7d022183b1819fd20545746d1028bd8f87ab5a817e4a90a8bdef8c10659661",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "dc0a327e3e8a44455ba37d8dea07699a03cf6a20457a0c302b6405792b959a7a"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "control",
+      "context_bytes": 0,
+      "context_sha256": null,
+      "ecosystem": "python",
+      "elapsed_seconds": 22.377945,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "sqlalchemy-14-to-2-execute",
+      "model": "gpt-5.6-luna",
+      "package": "sqlalchemy",
+      "provider": "openai-codex",
+      "target_version": "2.0.29",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "passed",
+        "exit_code": 0,
+        "oracle_bytes": 2067,
+        "oracle_sha256": "b61cb62f1a35209f80d1b5065a45d9817680db4441cfcfabaaad58bd0a97d48d",
+        "output_bytes": 109,
+        "output_sha256": "adfe6cbb9e038ecd18dd5ddb33dd56d649373b2fbc9ddc25ff129013bfbfef3e",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "b9e4dad44a0e9829037987a852e4d6d7eafda7fdc9ffbc353187fe94d823be37"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "manual",
+      "context_bytes": 689,
+      "context_sha256": "6c886103c7f58dd0d45e82bf4bd955f4ad2c2d87021417e27726d76aa2783b72",
+      "ecosystem": "python",
+      "elapsed_seconds": 18.837287,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "sqlalchemy-14-to-2-execute",
+      "model": "gpt-5.6-luna",
+      "package": "sqlalchemy",
+      "provider": "openai-codex",
+      "target_version": "2.0.29",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "passed",
+        "exit_code": 0,
+        "oracle_bytes": 2067,
+        "oracle_sha256": "b61cb62f1a35209f80d1b5065a45d9817680db4441cfcfabaaad58bd0a97d48d",
+        "output_bytes": 109,
+        "output_sha256": "adfe6cbb9e038ecd18dd5ddb33dd56d649373b2fbc9ddc25ff129013bfbfef3e",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "b9e4dad44a0e9829037987a852e4d6d7eafda7fdc9ffbc353187fe94d823be37"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "control",
+      "context_bytes": 0,
+      "context_sha256": null,
+      "ecosystem": "python",
+      "elapsed_seconds": 35.743742,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "sqlalchemy-14-to-2-select",
+      "model": "gpt-5.6-luna",
+      "package": "sqlalchemy",
+      "provider": "openai-codex",
+      "target_version": "2.0.29",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "failed",
+        "exit_code": 2,
+        "oracle_bytes": 2207,
+        "oracle_sha256": "3c866bf07ea5979542a6d5bd191d02abb9c7cc13707442d84257b75fe6fb3a84",
+        "output_bytes": 152,
+        "output_sha256": "2d786c1d7d0b6a53c6e044a9c865e3e00ef4d86c2a61d4311d986ef5bc92e39d",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "561d373c8889b201d9cc7c92d9c966de22bf7e5e3bf5614870e87bcff9671732"
+    },
+    {
+      "agent": {
+        "error": null,
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "arm": "manual",
+      "context_bytes": 611,
+      "context_sha256": "a0fe7b9a4236c1bdf9ed5c7d7860f1a9e8ae281b29fd4b2ce2793957d714669b",
+      "ecosystem": "python",
+      "elapsed_seconds": 34.514351,
+      "generation_id": "gate-a-five-case-repeat-1-2026-09-10",
+      "id": "sqlalchemy-14-to-2-select",
+      "model": "gpt-5.6-luna",
+      "package": "sqlalchemy",
+      "provider": "openai-codex",
+      "target_version": "2.0.29",
+      "test": {
+        "command": [
+          "python3",
+          "<external-oracle>",
+          "<workspace>"
+        ],
+        "command_status": "passed",
+        "exit_code": 0,
+        "oracle_bytes": 2207,
+        "oracle_sha256": "3c866bf07ea5979542a6d5bd191d02abb9c7cc13707442d84257b75fe6fb3a84",
+        "output_bytes": 108,
+        "output_sha256": "5d4477d4393ebf80300cb62b28e6d9666239d0dfa11a6d47c08c6316f2fb85ce",
+        "output_truncated": false
+      },
+      "workspace_diff_sha256": "a879fdf257985950bce7d30452fb417352f92e926016d6237ecb5780eea82286"
+    }
+  ],
+  "schema": "universal-docs.benchmark/v1"
+}

@@ -1,3 +1,3 @@
-"""Universal Docs MCP — Latest stable documentation for any package."""
+"""Universal Docs MCP — Bounded, version-aware documentation retrieval and delivery."""
 
-__version__ = "0.1.0"
+__version__ = "0.4.0rc2"

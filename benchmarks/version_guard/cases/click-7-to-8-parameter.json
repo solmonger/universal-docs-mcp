@@ -1,0 +1,18 @@
+{
+  "context_profile": "readme",
+  "ecosystem": "python",
+  "evidence_note": "Synthetic local API stub for click version semantics; not live-package evidence.",
+  "evidence_type": "synthetic_stub",
+  "expected_failure_class": "wrong_version_api",
+  "id": "click-7-to-8-parameter",
+  "oracle_file": "benchmarks/version_guard/oracles/click-7-to-8-parameter.py",
+  "package": "click",
+  "target_version": "8.1.7",
+  "task": "Update the click integration to the target contract without relying on unstated details.",
+  "test_command": [
+    "python3",
+    "-c",
+    "pass"
+  ],
+  "workspace_fixture": "benchmarks/version_guard/fixtures/click-7-to-8-parameter"
+}

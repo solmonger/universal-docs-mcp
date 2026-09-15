@@ -1,0 +1,145 @@
+{
+  "case_count": 12,
+  "case_ids": [
+    "attrs-21-to-23-slots",
+    "click-7-to-8-parameter",
+    "httpx-0-to-1-client",
+    "packaging-22-to-24-version",
+    "pydantic-v1-to-v2-model-dump",
+    "pydantic-v1-to-v2-validator",
+    "pytest-6-to-8-raises",
+    "rich-12-to-13-console",
+    "sqlalchemy-14-to-2-execute",
+    "sqlalchemy-14-to-2-select",
+    "stable-api-no-lift-control",
+    "urllib3-1-to-2-timeout"
+  ],
+  "cases": [
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "attrs-21-to-23-slots",
+      "initial_failure": {
+        "case_id": "attrs-21-to-23-slots",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "click-7-to-8-parameter",
+      "initial_failure": {
+        "case_id": "click-7-to-8-parameter",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "httpx-0-to-1-client",
+      "initial_failure": {
+        "case_id": "httpx-0-to-1-client",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "packaging-22-to-24-version",
+      "initial_failure": {
+        "case_id": "packaging-22-to-24-version",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "pydantic-v1-to-v2-model-dump",
+      "initial_failure": {
+        "case_id": "pydantic-v1-to-v2-model-dump",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "pydantic-v1-to-v2-validator",
+      "initial_failure": {
+        "case_id": "pydantic-v1-to-v2-validator",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "pytest-6-to-8-raises",
+      "initial_failure": {
+        "case_id": "pytest-6-to-8-raises",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "rich-12-to-13-console",
+      "initial_failure": {
+        "case_id": "rich-12-to-13-console",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "sqlalchemy-14-to-2-execute",
+      "initial_failure": {
+        "case_id": "sqlalchemy-14-to-2-execute",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "sqlalchemy-14-to-2-select",
+      "initial_failure": {
+        "case_id": "sqlalchemy-14-to-2-select",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "stable-api-no-lift-control",
+      "initial_failure": {
+        "case_id": "stable-api-no-lift-control",
+        "failure_class": "general_coding_error",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    },
+    {
+      "evidence_type": "synthetic_stub",
+      "id": "urllib3-1-to-2-timeout",
+      "initial_failure": {
+        "case_id": "urllib3-1-to-2-timeout",
+        "failure_class": "wrong_version_api",
+        "setup_failure": false,
+        "status": "initial_failure"
+      }
+    }
+  ],
+  "class_counts": {
+    "general_coding_error": 1,
+    "wrong_version_api": 11
+  },
+  "corpus_sha256": "57a8ca7b12b54aaa7f781c03a2676c4961bb317c14a19195f6657e15f2ff7d35",
+  "schema": "universal-docs.corpus-receipt/v1"
+}

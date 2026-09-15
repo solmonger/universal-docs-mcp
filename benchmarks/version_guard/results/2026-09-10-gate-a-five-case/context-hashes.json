@@ -1,0 +1,45 @@
+{
+  "contexts": [
+    {
+      "bytes": 667,
+      "id": "pydantic-v1-to-v2-model-dump",
+      "package": "pydantic",
+      "sha256": "a7b70ba26ef704ab7f524b544b3074748909855ed60126133d053e511dcd3e84",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.6.1"
+    },
+    {
+      "bytes": 740,
+      "id": "pydantic-v1-to-v2-validator",
+      "package": "pydantic",
+      "sha256": "3ac90dc55b6e11abf66c587d20896825bab67cc1de0a76b613c3fccd3ffb6b67",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.6.1"
+    },
+    {
+      "bytes": 689,
+      "id": "sqlalchemy-14-to-2-execute",
+      "package": "sqlalchemy",
+      "sha256": "6c886103c7f58dd0d45e82bf4bd955f4ad2c2d87021417e27726d76aa2783b72",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.0.29"
+    },
+    {
+      "bytes": 611,
+      "id": "sqlalchemy-14-to-2-select",
+      "package": "sqlalchemy",
+      "sha256": "a0fe7b9a4236c1bdf9ed5c7d7860f1a9e8ae281b29fd4b2ce2793957d714669b",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "2.0.29"
+    },
+    {
+      "bytes": 543,
+      "id": "rich-12-to-13-console",
+      "package": "rich",
+      "sha256": "681ec89871b68340e0f716fc137105ef9fe82896ef1e6af551c9a32b868b2ee1",
+      "source_profile": "fixed-version migration/API excerpt",
+      "target_version": "13.7.1"
+    }
+  ],
+  "schema": "universal-docs.context-hashes/v1"
+}

@@ -1,0 +1,18 @@
+{
+  "context_profile": "readme",
+  "ecosystem": "python",
+  "evidence_note": "Synthetic local API stub for packaging version semantics; not live-package evidence.",
+  "evidence_type": "synthetic_stub",
+  "expected_failure_class": "general_coding_error",
+  "id": "stable-api-no-lift-control",
+  "oracle_file": "benchmarks/version_guard/oracles/stable-api-no-lift-control.py",
+  "package": "packaging",
+  "target_version": "24.0",
+  "task": "Repair the off-by-one indexing bug in the stable API control; documentation must not supply the behavioral answer.",
+  "test_command": [
+    "python3",
+    "-c",
+    "pass"
+  ],
+  "workspace_fixture": "benchmarks/version_guard/fixtures/stable-api-no-lift-control"
+}
