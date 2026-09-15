@@ -587,6 +587,52 @@ def plan_dependency_changes(
     )
 
 
+def select_current_package(
+    project_root: Path, *, task: str | None = None,
+    source_paths: Iterable[str | Path] | None = None,
+) -> Plan:
+    """Select one exact registry pin from trusted current project evidence."""
+    root = Path(project_root)
+    manifests = [p for p in (root / "pyproject.toml", root / "requirements.txt") if p.is_file()]
+    if len(manifests) != 1:
+        return _abstain("unsupported_manifest" if not manifests else "ambiguous_manifest", package=None, source="")
+    manifest = manifests[0]
+    index, error = _read_manifest(manifest, root)
+    if error or index is None:
+        return _abstain(error or "malformed_manifest", package=None, source=_source(manifest))
+    candidates = {k: p for k, p in index.items() if _is_exact_registry(p)}
+    if not candidates:
+        return _abstain("no_exact_registry_candidate", package=None, source=_source(manifest))
+    paths = source_paths
+    if paths is None:
+        paths = sorted(str(p.relative_to(root)) for p in root.rglob("*.py") if p.is_file())[:_MAX_SOURCE_FILES]
+    else:
+        paths = tuple(paths)
+    normalized = _normalize_task(task) if task is not None else None
+    if task is not None and normalized is None:
+        return _abstain("task_signal_invalid", package=None, source=_source(manifest))
+    proven = []
+    for key, pin in sorted(candidates.items()):
+        signal = _source_signal(key, pin.pinned or "", None, paths, root)
+        if not isinstance(signal, str) and signal[1].get("mode") == "source_backed":
+            proven.append(key)
+    selected = None
+    if len(proven) == 1:
+        selected = proven[0]
+    elif normalized:
+        named = [k for k in (proven or list(candidates)) if re.search(r"(?<![A-Za-z0-9])" + re.escape(k) + r"(?![A-Za-z0-9])", normalized, re.I)]
+        if len(named) == 1:
+            selected = named[0]
+    if selected is None:
+        return _abstain("ambiguous_candidates" if len(proven) > 1 or len(candidates) > 1 else "task_package_not_locally_proven", package=None, source=_source(manifest))
+    pin = candidates[selected]
+    signal = _source_signal(selected, pin.pinned or "", normalized, paths, root)
+    if isinstance(signal, str):
+        return _abstain(signal, package=selected, source=_source(manifest))
+    query, selection = signal
+    return Plan("selected", "current_exact_pin", selected, "python", None, pin.pinned, pin.source, query, selection)
+
+
 # Friendly singular alias for callers that model one before/after operation.
 plan_dependency_change = plan_dependency_changes
 

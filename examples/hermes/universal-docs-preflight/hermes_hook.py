@@ -7,9 +7,12 @@ second implementation in this plugin. Hermes receives current-user context only.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import selectors
+import sqlite3
+import uuid
 import signal
 import stat
 import subprocess
@@ -204,12 +207,69 @@ def _frame_context(raw: bytes) -> dict[str, str]:
         return _missing("invalid_delivery_frame")
 
 
+def _session_state(session_id: str) -> tuple[Path, Path] | None:
+    """Read cwd/root only from Hermes-owned SQLite session state."""
+    home = Path(os.environ.get("HERMES_HOME", str(get_hermes_home()))).expanduser()
+    dbs = [home / "state.db", home / "hermes.db", home / "data" / "state.db"]
+    for db in dbs:
+        try:
+            with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.2) as con:
+                row = con.execute("SELECT cwd, git_repo_root FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            if row and isinstance(row[0], str):
+                cwd = Path(row[0]).resolve()
+                root = Path(row[1]).resolve() if isinstance(row[1], str) and row[1] else cwd
+                if cwd.is_dir() and root.is_dir():
+                    return cwd, root
+        except (OSError, sqlite3.Error, ValueError):
+            continue
+    return None
+
+
+def _native_callback(payload: dict[str, Any]) -> dict[str, str]:
+    from universal_docs_mcp.planner import select_current_package, to_preflight_request
+    from universal_docs_mcp.cache import DocsCache
+    from universal_docs_mcp.preflight import run_preflight
+    session = payload.get("session_id")
+    if not isinstance(session, str) or not session:
+        return _missing("missing_session_state")
+    state = _session_state(session)
+    if state is None:
+        return _missing("session_state_unavailable")
+    _cwd, root = state
+    task = payload.get("user_message") if isinstance(payload.get("user_message"), str) else None
+    plan = select_current_package(root, task=task)
+    receipt = {"schema": "universal-docs.hermes-consumption/v1", "status": plan.status, "reason": plan.reason, "session_id": session, "package": plan.package, "target_version": plan.target_version}
+    profile = Path(os.environ.get("HERMES_HOME", str(get_hermes_home())))
+    receipt_dir = profile / "receipts" / "universal-docs"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    if plan.status != "selected":
+        (receipt_dir / f"{session}-{uuid.uuid4().hex}.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        return _missing(plan.reason)
+    try:
+        async def run():
+            cache = DocsCache()
+            try:
+                return await run_preflight(to_preflight_request(plan), cache=cache)
+            finally:
+                cache.close()
+        result = asyncio.run(asyncio.wait_for(run(), 8))
+        receipt.update({"status": "retrieved" if result.get("found") is True and result.get("context") else "failed", "preflight": result.get("receipt"), "error": result.get("error")})
+        (receipt_dir / f"{session}-{uuid.uuid4().hex}.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        if receipt["status"] != "retrieved":
+            return _missing(result.get("error", "documentation_unavailable"))
+        return {"context": result["context"]}
+    except (Exception, asyncio.TimeoutError):
+        receipt.update({"status": "failed", "error": "preflight_failed"})
+        (receipt_dir / f"{session}-{uuid.uuid4().hex}.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        return _missing("preflight_failed")
+
+
 def register(ctx: Any) -> None:
     """Inject explicit prepared/missing state; Hermes pre_llm_call is fail-open."""
     try:
         settings = _settings(ctx)
     except (OSError, ValueError, TypeError):
-        ctx.register_hook("pre_llm_call", lambda **_: _missing("invalid_configuration"))
+        ctx.register_hook("pre_llm_call", lambda **payload: _native_callback(payload) if payload.get("session_id") else _missing("invalid_configuration"))
         return
     lock = threading.Lock()
     last_turn_id: str | None = None
