@@ -293,6 +293,18 @@ def _normalize_task(task: object) -> str | None:
     return normalized
 
 
+def _task_terms_appended(query: str, task: str | None) -> tuple[str, bool]:
+    """Append normalized task words to a bounded query; report contribution."""
+    contributed = False
+    if task:
+        for term in task.split():
+            if len(query) + 1 + len(term) > 512:
+                break
+            query += " " + term
+            contributed = True
+    return query, contributed
+
+
 def _source_signal(
     package: str,
     version: str,
@@ -494,13 +506,7 @@ def _source_signal(
     for term in selected:
         if len(query) + 1 + len(term) <= 512:
             query += " " + term
-    task_contributed = False
-    if task:
-        for term in task.split():
-            if len(query) + 1 + len(term) > 512:
-                break
-            query += " " + term
-            task_contributed = True
+    query, task_contributed = _task_terms_appended(query, task)
     bounded_aliases = [
         f"{key}->{value}"
         for key, value in sorted(aliases.items())
@@ -713,6 +719,33 @@ def select_current_package(
     pin = candidates[selected]
     signal = _source_signal(selected, pin.pinned or "", normalized, paths, root)
     if isinstance(signal, str):
+        if (
+            signal in {"task_signal_not_found", "task_signal_source_required"}
+            and normalized
+            and len(named_candidates) == 1
+            and selected == named_candidates[0]
+        ):
+            # The spec allows an unambiguous task-named locally pinned exact
+            # version as the research signal when the bounded source scan
+            # proves nothing. Hard fail-closed reasons (ambiguity, invalid
+            # input) never relax here.
+            base = f"{selected.replace('-', '_')} {pin.pinned or ''} {_QUERY}".strip()
+            query, task_contributed = _task_terms_appended(base, normalized)
+            return Plan(
+                "selected",
+                "current_exact_pin_named",
+                selected,
+                "python",
+                None,
+                pin.pinned,
+                pin.source,
+                query,
+                {
+                    "mode": "task_named",
+                    "source_files_inspected": len(paths),
+                    "task_contributed": task_contributed,
+                },
+            )
         return _abstain(signal, package=selected, source=_source(manifest))
     query, selection = signal
     return Plan(

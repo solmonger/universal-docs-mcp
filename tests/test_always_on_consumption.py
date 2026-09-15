@@ -411,3 +411,39 @@ def test_current_selector_abstains_on_ambiguous_requirements_variants(tmp_path):
     (root / "app.py").write_text("import click\nclick.echo('x')\n")
     plan = select_current_package(root, task="debug the click API")
     assert (plan.status, plan.reason) == ("abstained", "ambiguous_manifest")
+
+
+def test_current_selector_task_named_pin_selects_without_source_proof(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "requirements.txt").write_text("click==8.1.7\n")
+    (root / "app.py").write_text("print('hello')\n")
+    plan = select_current_package(root, task="debug the click 8.1.7 upgrade")
+    assert (plan.status, plan.package, plan.target_version) == (
+        "selected",
+        "click",
+        "8.1.7",
+    )
+    assert plan.reason == "current_exact_pin_named"
+    assert plan.selection["mode"] == "task_named"
+    assert "click" in plan.query and "8.1.7" in plan.query
+
+
+def test_current_selector_task_named_requires_one_unambiguous_name(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "requirements.txt").write_text("click==8.1.7\nrich==13.7.1\n")
+    (root / "app.py").write_text("print('hello')\n")
+    unnamed = select_current_package(root, task="improve the console output")
+    assert (unnamed.status, unnamed.reason) == ("abstained", "ambiguous_candidates")
+    both_named = select_current_package(root, task="compare click and rich behavior")
+    assert both_named.status == "abstained"
+
+
+def test_current_selector_task_naming_never_relaxes_hard_failures(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "requirements.txt").write_text("click==8.1.7\n")
+    (root / "app.py").write_text("from click import *\n")
+    plan = select_current_package(root, task="debug the click API")
+    assert (plan.status, plan.reason) == ("abstained", "task_signal_ambiguous")
