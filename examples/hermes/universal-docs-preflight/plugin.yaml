@@ -5,8 +5,8 @@ description: Inject static or automatic exact-version documentation context once
 author: Hermes Agent
 tags: [documentation, hooks, preflight]
 kind: standalone
-provides_hooks: [pre_llm_call]
-hooks: [pre_llm_call]
+capabilities:
+  provides_hooks: [pre_llm_call]
 config_schema:
   mode:
     type: string

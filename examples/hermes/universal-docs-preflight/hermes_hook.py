@@ -228,7 +228,7 @@ def _frame_context(raw: bytes) -> dict[str, str]:
 
 
 def _session_state(session_id: str) -> tuple[Path, Path] | None:
-    """Read and validate Hermes-owned cwd/root state without following escapes."""
+    """Resolve Hermes-owned session state, falling back to the host process cwd."""
     if not isinstance(session_id, str) or not session_id or len(session_id) > 256:
         return None
     home = Path(os.environ.get("HERMES_HOME", str(get_hermes_home()))).expanduser()
@@ -260,7 +260,22 @@ def _session_state(session_id: str) -> tuple[Path, Path] | None:
             return cwd, root
         except (OSError, sqlite3.Error, ValueError):
             continue
-    return None
+    try:
+        cwd_raw = Path(os.environ.get("TERMINAL_CWD") or Path.cwd())
+        if not cwd_raw.is_absolute() or cwd_raw.is_symlink():
+            return None
+        cwd = cwd_raw.resolve(strict=True)
+        if not cwd.is_dir():
+            return None
+        root = cwd
+        for candidate in (cwd, *cwd.parents):
+            marker = candidate / ".git"
+            if marker.exists() and not marker.is_symlink():
+                root = candidate
+                break
+        return cwd, root
+    except (OSError, ValueError):
+        return None
 
 
 def _atomic_receipt(directory: Path, receipt: dict[str, Any]) -> None:

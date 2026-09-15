@@ -195,3 +195,30 @@ def test_explicitly_disabled_profile_never_registers(tmp_path):
     )
     plugin.register(ctx)
     assert ctx.hooks == {}
+
+
+def test_native_mode_uses_terminal_cwd_when_session_row_has_blank_paths(
+    tmp_path, monkeypatch
+):
+    root = _project(tmp_path)
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    with sqlite3.connect(profile / "state.db") as con:
+        con.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)"
+        )
+        con.execute("INSERT INTO sessions VALUES ('session-1', '', '')")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("TERMINAL_CWD", str(root))
+    monkeypatch.chdir(tmp_path)
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path))
+    plugin.register(ctx)
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug click API"
+    )
+    assert "STATUS=prepared" in result["context"]
+    receipt = json.loads(
+        next((profile / "receipts" / "universal-docs").glob("*.json")).read_text()
+    )
+    assert (receipt["package"], receipt["target_version"]) == ("click", "8.1.7")
