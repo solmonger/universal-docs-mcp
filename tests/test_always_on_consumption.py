@@ -179,3 +179,19 @@ def test_malformed_static_config_does_not_enable_native_mode(tmp_path):
     ctx = Context({"mode": "native", "executable": str(tmp_path / "missing")})
     plugin.register(ctx)
     assert ctx.hooks == {}
+
+
+def test_explicitly_disabled_profile_never_registers(tmp_path):
+    profile = tmp_path / ".hermes" / "profiles" / "frenchbot"
+    profile.mkdir(parents=True)
+    plugin = load_plugin(profile)
+    ctx = Context(
+        {
+            "mode": "native",
+            "executable": str(_executable(tmp_path)),
+            "timeout_ms": 1000,
+            "disabled_profiles": "frenchbot,other-restricted-profile",
+        }
+    )
+    plugin.register(ctx)
+    assert ctx.hooks == {}

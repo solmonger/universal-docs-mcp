@@ -12,6 +12,10 @@ config_schema:
     type: string
     default: static
     description: static uses request_file; native plans from Hermes-owned session cwd and current task.
+  disabled_profiles:
+    type: string
+    default: ""
+    description: Comma-separated exact profile names that must not register this hook.
   executable:
     type: string
     required: true

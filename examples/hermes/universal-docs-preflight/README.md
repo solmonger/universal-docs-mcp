@@ -46,6 +46,7 @@ plugins:
         mode: native
         executable: /absolute/path/to/universal-docs-context
         timeout_ms: 10000
+        disabled_profiles: frenchbot
 ```
 
 Native mode records selected, retrieved, abstained, and failed outcomes under

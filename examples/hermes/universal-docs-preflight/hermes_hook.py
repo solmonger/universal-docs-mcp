@@ -61,10 +61,23 @@ def _settings(ctx: Any) -> dict[str, Any]:
     mode = ctx.get_config("mode", "static")
     if mode not in {"static", "native"}:
         raise ValueError("invalid_configuration")
+    disabled_raw = ctx.get_config("disabled_profiles", "")
+    if not isinstance(disabled_raw, str) or len(disabled_raw) > 4096:
+        raise ValueError("invalid_configuration")
+    disabled_profiles = {
+        name.strip() for name in disabled_raw.split(",") if name.strip()
+    }
+    profile_home = get_hermes_home().resolve()
+    profile_name = (
+        profile_home.name if profile_home.parent.name == "profiles" else "default"
+    )
+    if profile_name in disabled_profiles:
+        raise ValueError("profile_disabled")
     settings = {
         "mode": mode,
         "executable": _regular_path(ctx.get_config("executable"), executable=True),
         "timeout_ms": timeout,
+        "profile_name": profile_name,
     }
     if mode == "static":
         settings["request_file"] = _regular_path(ctx.get_config("request_file"))
