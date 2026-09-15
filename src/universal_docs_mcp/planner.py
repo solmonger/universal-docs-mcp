@@ -605,7 +605,22 @@ def select_current_package(
         return _abstain("no_exact_registry_candidate", package=None, source=_source(manifest))
     paths = source_paths
     if paths is None:
-        paths = sorted(str(p.relative_to(root)) for p in root.rglob("*.py") if p.is_file())[:_MAX_SOURCE_FILES]
+        # Bound discovery while walking; never materialize an unbounded rglob.
+        discovered: list[str] = []
+        for directory, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames[:] = sorted(
+                name for name in dirnames
+                if not (Path(directory) / name).is_symlink()
+            )
+            for name in sorted(filenames):
+                path = Path(directory) / name
+                if path.suffix == ".py" and not path.is_symlink():
+                    discovered.append(str(path.relative_to(root)))
+                    if len(discovered) >= _MAX_SOURCE_FILES:
+                        break
+            if len(discovered) >= _MAX_SOURCE_FILES:
+                break
+        paths = tuple(discovered)
     else:
         paths = tuple(paths)
     normalized = _normalize_task(task) if task is not None else None

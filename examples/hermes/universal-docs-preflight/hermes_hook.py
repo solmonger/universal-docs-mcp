@@ -15,6 +15,7 @@ import sqlite3
 import uuid
 import signal
 import stat
+import re
 import subprocess
 import threading
 import time
@@ -208,21 +209,61 @@ def _frame_context(raw: bytes) -> dict[str, str]:
 
 
 def _session_state(session_id: str) -> tuple[Path, Path] | None:
-    """Read cwd/root only from Hermes-owned SQLite session state."""
+    """Read and validate Hermes-owned cwd/root state without following escapes."""
+    if not isinstance(session_id, str) or not session_id or len(session_id) > 256:
+        return None
     home = Path(os.environ.get("HERMES_HOME", str(get_hermes_home()))).expanduser()
     dbs = [home / "state.db", home / "hermes.db", home / "data" / "state.db"]
+    trusted = [Path(p).resolve() for p in (home, Path.cwd()) if Path(p).is_dir()]
     for db in dbs:
         try:
             with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.2) as con:
-                row = con.execute("SELECT cwd, git_repo_root FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-            if row and isinstance(row[0], str):
-                cwd = Path(row[0]).resolve()
-                root = Path(row[1]).resolve() if isinstance(row[1], str) and row[1] else cwd
-                if cwd.is_dir() and root.is_dir():
-                    return cwd, root
+                row = con.execute("SELECT cwd, git_repo_root FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if not row or not isinstance(row[0], str) or not isinstance(row[1], str) or not row[1]:
+                continue
+            cwd_raw, root_raw = Path(row[0]), Path(row[1])
+            if cwd_raw.is_symlink() or root_raw.is_symlink():
+                continue
+            cwd, root = cwd_raw.resolve(strict=True), root_raw.resolve(strict=True)
+            if not cwd.is_dir() or not root.is_dir() or cwd != root and root not in cwd.parents:
+                continue
+            if not any(root == base or base in root.parents for base in trusted):
+                continue
+            return cwd, root
         except (OSError, sqlite3.Error, ValueError):
             continue
     return None
+
+
+def _atomic_receipt(directory: Path, receipt: dict[str, Any]) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    name = f"{receipt['session_id']}-{uuid.uuid4().hex}.json"
+    payload = (json.dumps(receipt, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode()
+    fd = os.open(directory / ("." + name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(directory / ("." + name), directory / name)
+    finally:
+        try: (directory / ("." + name)).unlink()
+        except FileNotFoundError: pass
+
+
+def _run_preflight_bounded(run, timeout: float):
+    """Run async work off an active loop, and always close its loop/cache."""
+    result: list[Any] = []
+    error: list[BaseException] = []
+    def worker() -> None:
+        try: result.append(asyncio.run(run()))
+        except BaseException as exc: error.append(exc)
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start(); thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError("preflight_timeout")
+    if error: raise error[0]
+    return result[0]
 
 
 def _native_callback(payload: dict[str, Any]) -> dict[str, str]:
@@ -237,13 +278,16 @@ def _native_callback(payload: dict[str, Any]) -> dict[str, str]:
         return _missing("session_state_unavailable")
     _cwd, root = state
     task = payload.get("user_message") if isinstance(payload.get("user_message"), str) else None
+    # Dependency presence alone is not an eligible technical turn.
+    if not task or not re.search(r"\b(code|coding|debug|implement|package|dependency|api|sdk|migration|library|import|upgrade|install|technical)\b", task, re.I):
+        return {}
     plan = select_current_package(root, task=task)
     receipt = {"schema": "universal-docs.hermes-consumption/v1", "status": plan.status, "reason": plan.reason, "session_id": session, "package": plan.package, "target_version": plan.target_version}
     profile = Path(os.environ.get("HERMES_HOME", str(get_hermes_home())))
     receipt_dir = profile / "receipts" / "universal-docs"
     receipt_dir.mkdir(parents=True, exist_ok=True)
     if plan.status != "selected":
-        (receipt_dir / f"{session}-{uuid.uuid4().hex}.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        _atomic_receipt(receipt_dir, receipt)
         return _missing(plan.reason)
     try:
         async def run():
@@ -252,15 +296,15 @@ def _native_callback(payload: dict[str, Any]) -> dict[str, str]:
                 return await run_preflight(to_preflight_request(plan), cache=cache)
             finally:
                 cache.close()
-        result = asyncio.run(asyncio.wait_for(run(), 8))
+        result = _run_preflight_bounded(run, 8)
         receipt.update({"status": "retrieved" if result.get("found") is True and result.get("context") else "failed", "preflight": result.get("receipt"), "error": result.get("error")})
-        (receipt_dir / f"{session}-{uuid.uuid4().hex}.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        _atomic_receipt(receipt_dir, receipt)
         if receipt["status"] != "retrieved":
             return _missing(result.get("error", "documentation_unavailable"))
         return {"context": result["context"]}
     except (Exception, asyncio.TimeoutError):
         receipt.update({"status": "failed", "error": "preflight_failed"})
-        (receipt_dir / f"{session}-{uuid.uuid4().hex}.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        _atomic_receipt(receipt_dir, receipt)
         return _missing("preflight_failed")
 
 
@@ -269,7 +313,7 @@ def register(ctx: Any) -> None:
     try:
         settings = _settings(ctx)
     except (OSError, ValueError, TypeError):
-        ctx.register_hook("pre_llm_call", lambda **payload: _native_callback(payload) if payload.get("session_id") else _missing("invalid_configuration"))
+        # Native mode is opt-in; malformed static settings must not activate it.
         return
     lock = threading.Lock()
     last_turn_id: str | None = None
