@@ -89,6 +89,40 @@ def _supported_python_manifest(path: Path) -> bool:
     ) or name == "pyproject.toml"
 
 
+#: Manifests this planner recognises but does not read. Their presence makes an
+#: abstention "unsupported_manifest" (a project is here, we cannot read it)
+#: instead of "no_manifest_found" (there is nothing here to read at all).
+_FOREIGN_MANIFESTS = frozenset(
+    {
+        "package.json",
+        "cargo.toml",
+        "pipfile",
+        "pipfile.lock",
+        "poetry.lock",
+        "pdm.lock",
+        "setup.py",
+        "setup.cfg",
+        "environment.yml",
+        "environment.yaml",
+        "go.mod",
+        "gemfile",
+        "pom.xml",
+        "build.gradle",
+        "composer.json",
+        "mix.exs",
+        "pubspec.yaml",
+        "package.swift",
+        "deno.json",
+    }
+)
+
+
+def _foreign_manifest(entry: Path) -> bool:
+    """True when *entry* is a manifest file this planner does not support."""
+    name = entry.name.lower()
+    return (name in _FOREIGN_MANIFESTS or name.endswith(".csproj")) and entry.is_file()
+
+
 def _index(pins: Iterable[Pin]) -> tuple[dict[str, Pin] | None, str | None]:
     result: dict[str, Pin] = {}
     for pin in pins:
@@ -610,25 +644,32 @@ def select_current_package(
         # Neither canonical name exists. Accept a single bounded
         # requirements-family manifest (the same set lockfile.read_pins
         # supports); more than one candidate abstains rather than picking
-        # arbitrarily, and none stays unsupported.
+        # arbitrarily. When there is no candidate at all, the reason says which
+        # silence this is: a project manifest we do not read, or nothing here
+        # that declares dependencies.
         try:
-            family = sorted(
-                (
-                    p
-                    for p in root.iterdir()
-                    if p.is_file()
-                    and not p.is_symlink()
-                    and p.name.lower().startswith("requirements")
-                    and p.name.lower().endswith(".txt")
-                ),
-                key=lambda p: p.name,
-            )
+            entries = list(root.iterdir())
         except OSError:
-            return _abstain("unsupported_manifest", package=None, source="")
+            # The root itself could not be inspected (missing directory,
+            # permissions) — which is not an unsupported manifest.
+            return _abstain("unreadable_project_root", package=None, source="")
+        family = sorted(
+            (
+                p
+                for p in entries
+                if p.is_file()
+                and not p.is_symlink()
+                and p.name.lower().startswith("requirements")
+                and p.name.lower().endswith(".txt")
+            ),
+            key=lambda p: p.name,
+        )
         if len(family) > 1:
             return _abstain("ambiguous_manifest", package=None, source="")
         if not family:
-            return _abstain("unsupported_manifest", package=None, source="")
+            if any(_foreign_manifest(p) for p in entries):
+                return _abstain("unsupported_manifest", package=None, source="")
+            return _abstain("no_manifest_found", package=None, source="")
         manifests = family
     manifest = manifests[0]
     index, error = _read_manifest(manifest, root)

@@ -413,6 +413,28 @@ def test_current_selector_abstains_on_ambiguous_requirements_variants(tmp_path):
     assert (plan.status, plan.reason) == ("abstained", "ambiguous_manifest")
 
 
+def test_current_selector_reports_absent_manifest_honestly(tmp_path):
+    """No manifest at all is nothing to read — not an unsupported manifest."""
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "notes.md").write_text("nothing to pin here\n")
+    plan = select_current_package(root, task="debug the click API")
+    assert (plan.status, plan.reason) == ("abstained", "no_manifest_found")
+
+
+def test_current_selector_reports_foreign_manifest_as_unsupported(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "package.json").write_text("{}\n")
+    plan = select_current_package(root, task="debug the click API")
+    assert (plan.status, plan.reason) == ("abstained", "unsupported_manifest")
+
+
+def test_current_selector_reports_unreadable_root(tmp_path):
+    plan = select_current_package(tmp_path / "gone", task="debug the click API")
+    assert (plan.status, plan.reason) == ("abstained", "unreadable_project_root")
+
+
 def test_current_selector_task_named_pin_selects_without_source_proof(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
