@@ -31,7 +31,7 @@ Markets, news, papers, therapy, generic factual research, and other turns withou
 
 ### Current package/API work
 
-The selector reads one supported current manifest and at most eight bounded source files. It attributes imports and symbols using the reviewed task-aware source parser. A package is selectable only when:
+The selector reads one supported current manifest and at most eight bounded source files. Supported manifests are `pyproject.toml`, `requirements.txt`, or — when neither canonical file exists — a single `requirements*.txt` family file; multiple candidates abstain. It attributes imports and symbols using the reviewed task-aware source parser. A package is selectable only when:
 
 - the manifest has one exact registry pin for it; and
 - source attribution proves use of that package, or the normalized task text unambiguously names that locally pinned package for technical research.
@@ -51,7 +51,7 @@ When before/after manifest evidence exists, the existing dependency-change plann
 
 ## Receipts and abstention
 
-Every eligible evaluation writes a machine-readable receipt, including abstentions and failures. Receipt statuses are `selected`, `abstained`, `retrieved`, and `failed`; reasons are stable machine-readable tokens. A `retrieved` receipt must bind the returned context to the exact `docrequest-v4:{ecosystem}:{package}:{version}` cache key, cache fetch time, source and source URL, byte count, cache-value SHA-256, and injected-context SHA-256. The cache source URL must occur in the injected context; a valid frame without that binding fails closed as `cache_evidence_missing_or_mismatched`. Registration, process presence, handshake, `cache_stats`, and assistant-authored smoke probes do not count as consumption.
+Every eligible evaluation writes a machine-readable receipt, including abstentions and failures. Receipt statuses are `selected`, `abstained`, `retrieved`, and `failed`; reasons are stable machine-readable tokens. Native receipts also record the resolved working directory, resolved project root, and resolution source (`session_row_git_root`, `session_row_cwd`, `terminal_cwd`, or `process_cwd`). A `retrieved` receipt must bind the returned context to the exact `docrequest-v4:{ecosystem}:{package}:{version}` cache key, cache fetch time, source and source URL, byte count, cache-value SHA-256, and injected-context SHA-256. The cache source URL must occur in the injected context; a valid frame without that binding fails closed as `cache_evidence_missing_or_mismatched`. Registration, process presence, handshake, `cache_stats`, and assistant-authored smoke probes do not count as consumption.
 
 The hook injects a concise abstention marker only when the absence of documentation materially affects the task. It never fabricates documentation or silently falls back to latest versions.
 

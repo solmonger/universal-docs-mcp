@@ -599,11 +599,31 @@ def select_current_package(
         p for p in (root / "pyproject.toml", root / "requirements.txt") if p.is_file()
     ]
     if len(manifests) != 1:
-        return _abstain(
-            "unsupported_manifest" if not manifests else "ambiguous_manifest",
-            package=None,
-            source="",
-        )
+        if manifests:
+            return _abstain("ambiguous_manifest", package=None, source="")
+        # Neither canonical name exists. Accept a single bounded
+        # requirements-family manifest (the same set lockfile.read_pins
+        # supports); more than one candidate abstains rather than picking
+        # arbitrarily, and none stays unsupported.
+        try:
+            family = sorted(
+                (
+                    p
+                    for p in root.iterdir()
+                    if p.is_file()
+                    and not p.is_symlink()
+                    and p.name.lower().startswith("requirements")
+                    and p.name.lower().endswith(".txt")
+                ),
+                key=lambda p: p.name,
+            )
+        except OSError:
+            return _abstain("unsupported_manifest", package=None, source="")
+        if len(family) > 1:
+            return _abstain("ambiguous_manifest", package=None, source="")
+        if not family:
+            return _abstain("unsupported_manifest", package=None, source="")
+        manifests = family
     manifest = manifests[0]
     index, error = _read_manifest(manifest, root)
     if error or index is None:

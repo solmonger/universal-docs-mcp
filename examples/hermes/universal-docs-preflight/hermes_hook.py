@@ -241,11 +241,36 @@ def _frame_context(raw: bytes) -> dict[str, str]:
         return _missing("invalid_delivery_frame")
 
 
-def _session_state(session_id: str) -> tuple[Path, Path] | None:
-    """Resolve Hermes-owned session state, falling back to the host process cwd."""
+def _hermes_home() -> Path:
+    """Active Hermes home, honoring context-local profile overrides.
+
+    Under multiplexed serving the process environment alone is not enough:
+    Hermes binds the current turn's profile scope through ``get_hermes_home()``
+    (the same precedence the cache scope already uses).
+    """
+    return get_hermes_home().expanduser()
+
+
+def _git_root(cwd: Path) -> Path:
+    """Walk up from a trusted working directory to the nearest ``.git`` root."""
+    for candidate in (cwd, *cwd.parents):
+        marker = candidate / ".git"
+        if marker.exists() and not marker.is_symlink():
+            return candidate
+    return cwd
+
+
+def _session_state(session_id: str) -> tuple[Path, Path, str] | None:
+    """Resolve Hermes-owned session state plus the evidence source used.
+
+    Order: a validated session database row (its stored git root when that
+    root contains the session cwd, otherwise the root derived from the row's
+    cwd), then Hermes's absolute ``TERMINAL_CWD`` binding, then the host
+    process cwd. Returns ``(cwd, root, source)``.
+    """
     if not isinstance(session_id, str) or not session_id or len(session_id) > 256:
         return None
-    home = Path(os.environ.get("HERMES_HOME", str(get_hermes_home()))).expanduser()
+    home = _hermes_home()
     dbs = [home / "state.db", home / "hermes.db", home / "data" / "state.db"]
     for db in dbs:
         try:
@@ -253,41 +278,36 @@ def _session_state(session_id: str) -> tuple[Path, Path] | None:
                 row = con.execute(
                     "SELECT cwd, git_repo_root FROM sessions WHERE id=?", (session_id,)
                 ).fetchone()
-            if (
-                not row
-                or not isinstance(row[0], str)
-                or not isinstance(row[1], str)
-                or not row[1]
-            ):
+            if not row or not isinstance(row[0], str) or not row[0]:
                 continue
-            cwd_raw, root_raw = Path(row[0]), Path(row[1])
-            if cwd_raw.is_symlink() or root_raw.is_symlink():
+            cwd_raw = Path(row[0])
+            if cwd_raw.is_symlink():
                 continue
-            cwd, root = cwd_raw.resolve(strict=True), root_raw.resolve(strict=True)
-            if (
-                not cwd.is_dir()
-                or not root.is_dir()
-                or cwd != root
-                and root not in cwd.parents
-            ):
+            cwd = cwd_raw.resolve(strict=True)
+            if not cwd.is_dir():
                 continue
-            return cwd, root
+            if isinstance(row[1], str) and row[1]:
+                root_raw = Path(row[1])
+                if not root_raw.is_symlink():
+                    candidate = root_raw.resolve(strict=True)
+                    if candidate.is_dir() and (
+                        cwd == candidate or candidate in cwd.parents
+                    ):
+                        return cwd, candidate, "session_row_git_root"
+            # Hermes persists git metadata best-effort; a row with only a cwd
+            # is still trusted evidence for that working directory.
+            return cwd, _git_root(cwd), "session_row_cwd"
         except (OSError, sqlite3.Error, ValueError):
             continue
     try:
-        cwd_raw = Path(os.environ.get("TERMINAL_CWD") or Path.cwd())
+        terminal = os.environ.get("TERMINAL_CWD")
+        cwd_raw = Path(terminal) if terminal else Path.cwd()
         if not cwd_raw.is_absolute() or cwd_raw.is_symlink():
             return None
         cwd = cwd_raw.resolve(strict=True)
         if not cwd.is_dir():
             return None
-        root = cwd
-        for candidate in (cwd, *cwd.parents):
-            marker = candidate / ".git"
-            if marker.exists() and not marker.is_symlink():
-                root = candidate
-                break
-        return cwd, root
+        return cwd, _git_root(cwd), "terminal_cwd" if terminal else "process_cwd"
     except (OSError, ValueError):
         return None
 
@@ -380,10 +400,6 @@ def _native_callback(
     session = payload.get("session_id")
     if not isinstance(session, str) or not session:
         return _missing("missing_session_state")
-    state = _session_state(session)
-    if state is None:
-        return _missing("session_state_unavailable")
-    _cwd, root = state
     task = (
         payload.get("user_message")
         if isinstance(payload.get("user_message"), str)
@@ -396,17 +412,31 @@ def _native_callback(
         re.I,
     ):
         return None
-    plan = select_current_package(root, task=task)
-    receipt = {
+    receipt_dir = _hermes_home() / "receipts" / "universal-docs"
+    receipt: dict[str, Any] = {
         "schema": "universal-docs.hermes-consumption/v1",
-        "status": plan.status,
-        "reason": plan.reason,
+        "status": "abstained",
+        "reason": "session_state_unavailable",
         "session_id": session,
-        "package": plan.package,
-        "target_version": plan.target_version,
+        "package": None,
+        "target_version": None,
+        "resolution": {"cwd": None, "root": None, "source": None},
     }
-    profile = Path(os.environ.get("HERMES_HOME", str(get_hermes_home())))
-    receipt_dir = profile / "receipts" / "universal-docs"
+    state = _session_state(session)
+    if state is None:
+        _atomic_receipt(receipt_dir, receipt)
+        return _missing("session_state_unavailable")
+    cwd, root, resolution = state
+    receipt["resolution"] = {"cwd": str(cwd), "root": str(root), "source": resolution}
+    plan = select_current_package(root, task=task)
+    receipt.update(
+        {
+            "status": plan.status,
+            "reason": plan.reason,
+            "package": plan.package,
+            "target_version": plan.target_version,
+        }
+    )
     if plan.status != "selected":
         _atomic_receipt(receipt_dir, receipt)
         return _missing(plan.reason)
@@ -423,10 +453,10 @@ def _native_callback(
             "DOCS_PREFLIGHT_STATUS=prepared\n" in context
             or "DOCS_PREFLIGHT_STATUS=prepared_stale\n" in context
         )
-        evidence = (
+        cache_evidence = (
             _cache_evidence(settings["cache_dir"], plan, context) if retrieved else None
         )
-        retrieved = retrieved and evidence is not None
+        retrieved = retrieved and cache_evidence is not None
         receipt.update(
             {
                 "status": "retrieved" if retrieved else "failed",
@@ -438,7 +468,7 @@ def _native_callback(
                 "context_sha256": hashlib.sha256(context.encode()).hexdigest()
                 if retrieved
                 else None,
-                "cache_evidence": evidence,
+                "cache_evidence": cache_evidence,
             }
         )
         _atomic_receipt(receipt_dir, receipt)

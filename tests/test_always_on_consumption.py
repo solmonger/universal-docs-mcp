@@ -264,3 +264,150 @@ def test_native_mode_uses_terminal_cwd_when_session_row_has_blank_paths(
         next((profile / "receipts" / "universal-docs").glob("*.json")).read_text()
     )
     assert (receipt["package"], receipt["target_version"]) == ("click", "8.1.7")
+    assert receipt["resolution"]["source"] == "terminal_cwd"
+
+
+def _profile_with(
+    tmp_path: Path, cwd: str, git_root: str | None, session_id: str = "session-1"
+) -> Path:
+    profile = tmp_path / "profile"
+    profile.mkdir(exist_ok=True)
+    with sqlite3.connect(profile / "state.db") as con:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)"
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO sessions VALUES (?, ?, ?)",
+            (session_id, cwd, git_root),
+        )
+    return profile
+
+
+def _receipt(profile: Path) -> dict:
+    return json.loads(
+        next((profile / "receipts" / "universal-docs").glob("*.json")).read_text()
+    )
+
+
+def test_native_mode_resolves_from_session_row_cwd_when_git_root_blank(
+    tmp_path, monkeypatch
+):
+    """Hermes persists git metadata best-effort; a cwd-only row must still serve."""
+    root = _project(tmp_path)
+    profile = _profile_with(tmp_path, str(root), None)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path))
+    plugin.register(ctx)
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug the click API"
+    )
+    assert "STATUS=prepared" in result["context"]
+    receipt = _receipt(profile)
+    assert receipt["status"] == "retrieved"
+    assert receipt["resolution"] == {
+        "cwd": str(root),
+        "root": str(root),
+        "source": "session_row_cwd",
+    }
+
+
+def test_native_mode_derives_git_root_above_session_cwd(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    (root / ".git").mkdir()
+    nested = root / "pkg"
+    nested.mkdir()
+    profile = _profile_with(tmp_path, str(nested), None)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path))
+    plugin.register(ctx)
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug the click API"
+    )
+    assert "STATUS=prepared" in result["context"]
+    receipt = _receipt(profile)
+    assert receipt["status"] == "retrieved"
+    assert receipt["resolution"]["root"] == str(root)
+    assert receipt["resolution"]["source"] == "session_row_cwd"
+
+
+def test_native_mode_prefers_valid_stored_git_root(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    nested = root / "src"
+    nested.mkdir()
+    profile = _profile_with(tmp_path, str(nested), str(root))
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path))
+    plugin.register(ctx)
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug the click API"
+    )
+    assert "STATUS=prepared" in result["context"]
+    receipt = _receipt(profile)
+    assert receipt["resolution"]["source"] == "session_row_git_root"
+    assert receipt["resolution"]["root"] == str(root)
+
+
+def test_unresolvable_session_state_writes_abstention_receipt(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    with sqlite3.connect(profile / "state.db") as con:
+        con.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT)"
+        )
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "missing-dir"))
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path))
+    plugin.register(ctx)
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug click API"
+    )
+    assert "DOCS_PREFLIGHT_ERROR=session_state_unavailable" in result["context"]
+    receipt = _receipt(profile)
+    assert (receipt["status"], receipt["reason"]) == (
+        "abstained",
+        "session_state_unavailable",
+    )
+    assert receipt["resolution"] == {"cwd": None, "root": None, "source": None}
+
+
+def test_current_selector_reads_single_requirements_variant(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "requirements-dev.txt").write_text("click==8.1.7\n")
+    (root / "app.py").write_text("import click\nclick.echo('x')\n")
+    plan = select_current_package(root, task="debug the click API")
+    assert (plan.status, plan.package, plan.target_version) == (
+        "selected",
+        "click",
+        "8.1.7",
+    )
+    assert plan.resolution_source == "requirements"
+    assert plan.selection["mode"] == "source_backed"
+
+
+def test_current_selector_keeps_canonical_precedence(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "requirements.txt").write_text("click==8.1.7\n")
+    (root / "requirements-dev.txt").write_text("rich==13.7.1\n")
+    (root / "app.py").write_text("import click\nclick.echo('x')\n")
+    plan = select_current_package(root, task="debug the click API")
+    assert (plan.status, plan.package, plan.target_version) == (
+        "selected",
+        "click",
+        "8.1.7",
+    )
+
+
+def test_current_selector_abstains_on_ambiguous_requirements_variants(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "requirements-dev.txt").write_text("click==8.1.7\n")
+    (root / "requirements-prod.txt").write_text("click==8.1.7\n")
+    (root / "app.py").write_text("import click\nclick.echo('x')\n")
+    plan = select_current_package(root, task="debug the click API")
+    assert (plan.status, plan.reason) == ("abstained", "ambiguous_manifest")

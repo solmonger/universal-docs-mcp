@@ -50,8 +50,10 @@ plugins:
 ```
 
 Native mode records selected, retrieved, abstained, and failed outcomes under
-`$HERMES_HOME/receipts/universal-docs/`. Unrelated turns create neither context
-nor a receipt. Do not enable the plugin in deliberately restricted profiles.
+`$HERMES_HOME/receipts/universal-docs/`, each with the resolved working
+directory, project root, and resolution source. Unrelated turns create neither
+context nor a receipt. Do not enable the plugin in deliberately restricted
+profiles.
 
 Set the request deadline below the outer process timeout, which must be below the
 host hook timeout. The plugin executes without a shell or `preexec_fn`, supplies
