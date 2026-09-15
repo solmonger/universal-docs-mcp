@@ -1,21 +1,25 @@
 manifest_version: 2
 name: universal-docs-preflight
-version: "0.2.0"
-description: Inject shared validated documentation context once per Hermes turn.
+version: "0.3.0"
+description: Inject static or automatic exact-version documentation context once per Hermes turn.
 author: Hermes Agent
 tags: [documentation, hooks, preflight]
 kind: standalone
 provides_hooks: [pre_llm_call]
 hooks: [pre_llm_call]
 config_schema:
+  mode:
+    type: string
+    default: static
+    description: static uses request_file; native plans from Hermes-owned session cwd and current task.
   executable:
     type: string
     required: true
     description: Absolute regular-file path to the reviewed universal-docs-context CLI.
   request_file:
     type: string
-    required: true
-    description: Absolute trusted JSON request file; never chosen from a hook payload.
+    required: false
+    description: Absolute trusted JSON request file required only in static mode; never chosen from a hook payload.
   timeout_ms:
     type: integer
     default: 3000

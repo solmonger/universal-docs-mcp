@@ -1,9 +1,11 @@
 # Hermes documentation context bridge
 
 This local POSIX plugin candidate consumes the shared `universal-docs-context`
-CLI. Source selection, request/receipt validation, freshness policy and packet
-formatting have one owner in the core package; the plugin does not reinterpret
-package versions or turn raw preflight dictionaries into a success claim.
+CLI in two explicit modes. `static` preserves the trusted request-file bridge.
+`native` resolves the project only from Hermes-owned session state, selects one
+exact locally pinned dependency from bounded source evidence, and creates a
+strict temporary request for eligible coding or package/API technical-research
+turns. Prompt text cannot select paths, versions, registries, or URLs.
 
 ## Explicit configuration (not installed automatically)
 
@@ -17,6 +19,7 @@ plugins:
   entries:
     universal-docs-preflight:
       settings:
+        mode: static
         executable: /absolute/path/to/universal-docs-context
         request_file: /absolute/path/to/docs-request.json
         timeout_ms: 3000
@@ -29,6 +32,25 @@ An example package request is:
 ```json
 {"ecosystem":"python","package":"requests","selection":"requested","requested_version":"2.32.3","query":"install","context_max_bytes":4000,"freshness_mode":"require_check","deadline_ms":2000}
 ```
+
+For automatic consumption, omit `request_file` and set `mode: native`. Use a
+10-second host callback timeout and a smaller outer process timeout:
+
+```yaml
+plugins:
+  enabled: [universal-docs-preflight]
+  hook_callback_timeout: 12
+  entries:
+    universal-docs-preflight:
+      settings:
+        mode: native
+        executable: /absolute/path/to/universal-docs-context
+        timeout_ms: 10000
+```
+
+Native mode records selected, retrieved, abstained, and failed outcomes under
+`$HERMES_HOME/receipts/universal-docs/`. Unrelated turns create neither context
+nor a receipt. Do not enable the plugin in deliberately restricted profiles.
 
 Set the request deadline below the outer process timeout, which must be below the
 host hook timeout. The plugin executes without a shell or `preexec_fn`, supplies

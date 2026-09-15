@@ -588,29 +588,47 @@ def plan_dependency_changes(
 
 
 def select_current_package(
-    project_root: Path, *, task: str | None = None,
+    project_root: Path,
+    *,
+    task: str | None = None,
     source_paths: Iterable[str | Path] | None = None,
 ) -> Plan:
     """Select one exact registry pin from trusted current project evidence."""
     root = Path(project_root)
-    manifests = [p for p in (root / "pyproject.toml", root / "requirements.txt") if p.is_file()]
+    manifests = [
+        p for p in (root / "pyproject.toml", root / "requirements.txt") if p.is_file()
+    ]
     if len(manifests) != 1:
-        return _abstain("unsupported_manifest" if not manifests else "ambiguous_manifest", package=None, source="")
+        return _abstain(
+            "unsupported_manifest" if not manifests else "ambiguous_manifest",
+            package=None,
+            source="",
+        )
     manifest = manifests[0]
     index, error = _read_manifest(manifest, root)
     if error or index is None:
-        return _abstain(error or "malformed_manifest", package=None, source=_source(manifest))
+        return _abstain(
+            error or "malformed_manifest", package=None, source=_source(manifest)
+        )
     candidates = {k: p for k, p in index.items() if _is_exact_registry(p)}
     if not candidates:
-        return _abstain("no_exact_registry_candidate", package=None, source=_source(manifest))
+        return _abstain(
+            "no_exact_registry_candidate", package=None, source=_source(manifest)
+        )
     paths = source_paths
     if paths is None:
         # Bound discovery while walking; never materialize an unbounded rglob.
         discovered: list[str] = []
+        visited_directories = 0
         for directory, dirnames, filenames in os.walk(root, followlinks=False):
+            visited_directories += 1
+            if visited_directories > 64:
+                break
             dirnames[:] = sorted(
-                name for name in dirnames
-                if not (Path(directory) / name).is_symlink()
+                name
+                for name in dirnames
+                if name not in {".git", ".venv", "venv", "node_modules", "__pycache__"}
+                and not (Path(directory) / name).is_symlink()
             )
             for name in sorted(filenames):
                 path = Path(directory) / name
@@ -626,8 +644,26 @@ def select_current_package(
     normalized = _normalize_task(task) if task is not None else None
     if task is not None and normalized is None:
         return _abstain("task_signal_invalid", package=None, source=_source(manifest))
+    named_candidates: list[str] = []
+    if normalized:
+        named_candidates = [
+            key
+            for key in candidates
+            if re.search(
+                r"(?<![A-Za-z0-9])" + re.escape(key) + r"(?![A-Za-z0-9])",
+                normalized,
+                re.I,
+            )
+        ]
+    if len(named_candidates) == 1:
+        candidate_keys = named_candidates
+    elif len(candidates) > 64:
+        return _abstain("too_many_candidates", package=None, source=_source(manifest))
+    else:
+        candidate_keys = sorted(candidates)
     proven = []
-    for key, pin in sorted(candidates.items()):
+    for key in candidate_keys:
+        pin = candidates[key]
         signal = _source_signal(key, pin.pinned or "", None, paths, root)
         if not isinstance(signal, str) and signal[1].get("mode") == "source_backed":
             proven.append(key)
@@ -635,17 +671,41 @@ def select_current_package(
     if len(proven) == 1:
         selected = proven[0]
     elif normalized:
-        named = [k for k in (proven or list(candidates)) if re.search(r"(?<![A-Za-z0-9])" + re.escape(k) + r"(?![A-Za-z0-9])", normalized, re.I)]
+        named = [
+            k
+            for k in (proven or named_candidates)
+            if re.search(
+                r"(?<![A-Za-z0-9])" + re.escape(k) + r"(?![A-Za-z0-9])",
+                normalized,
+                re.I,
+            )
+        ]
         if len(named) == 1:
             selected = named[0]
     if selected is None:
-        return _abstain("ambiguous_candidates" if len(proven) > 1 or len(candidates) > 1 else "task_package_not_locally_proven", package=None, source=_source(manifest))
+        return _abstain(
+            "ambiguous_candidates"
+            if len(proven) > 1 or len(candidates) > 1
+            else "task_package_not_locally_proven",
+            package=None,
+            source=_source(manifest),
+        )
     pin = candidates[selected]
     signal = _source_signal(selected, pin.pinned or "", normalized, paths, root)
     if isinstance(signal, str):
         return _abstain(signal, package=selected, source=_source(manifest))
     query, selection = signal
-    return Plan("selected", "current_exact_pin", selected, "python", None, pin.pinned, pin.source, query, selection)
+    return Plan(
+        "selected",
+        "current_exact_pin",
+        selected,
+        "python",
+        None,
+        pin.pinned,
+        pin.source,
+        query,
+        selection,
+    )
 
 
 # Friendly singular alias for callers that model one before/after operation.
