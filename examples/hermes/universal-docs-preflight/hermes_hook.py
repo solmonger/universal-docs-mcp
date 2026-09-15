@@ -21,6 +21,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from hermes_constants import get_hermes_home
 
@@ -73,26 +74,39 @@ def _settings(ctx: Any) -> dict[str, Any]:
     )
     if profile_name in disabled_profiles:
         raise ValueError("profile_disabled")
+    cache_raw = ctx.get_config(
+        "cache_dir", str(profile_home / "cache" / "universal-docs-preflight")
+    )
+    if not isinstance(cache_raw, str) or not Path(cache_raw).is_absolute():
+        raise ValueError("invalid_configuration")
+    cache_dir = Path(cache_raw).resolve(strict=False)
+    if cache_dir.exists() and (cache_dir.is_symlink() or not cache_dir.is_dir()):
+        raise ValueError("invalid_configuration")
     settings = {
         "mode": mode,
         "executable": _regular_path(ctx.get_config("executable"), executable=True),
         "timeout_ms": timeout,
         "profile_name": profile_name,
+        "cache_dir": cache_dir,
     }
     if mode == "static":
         settings["request_file"] = _regular_path(ctx.get_config("request_file"))
     return settings
 
 
-def _environment() -> dict[str, str]:
+def _environment(settings: dict[str, Any] | None = None) -> dict[str, str]:
     home = os.environ.get("HOME", str(Path.home()))
-    profile = get_hermes_home()
+    cache_dir = (
+        settings["cache_dir"]
+        if settings is not None
+        else get_hermes_home() / "cache" / "universal-docs-preflight"
+    )
     return {
         "PATH": "/usr/bin:/bin",
         "HOME": home,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "UNIVERSAL_DOCS_CACHE_DIR": str(profile / "cache" / "universal-docs-preflight"),
+        "UNIVERSAL_DOCS_CACHE_DIR": str(cache_dir),
     }
 
 
@@ -131,7 +145,7 @@ def _read_child(settings: dict[str, Any]) -> tuple[bytes, str | None]:
             close_fds=True,
             start_new_session=True,
             cwd=str(Path(settings["executable"]).parent),
-            env=_environment(),
+            env=_environment(settings),
         )
     except (OSError, ValueError):
         return b"", "spawn_failed"
@@ -317,6 +331,47 @@ def _request_file(directory: Path, request: dict[str, Any]) -> Path:
     return path
 
 
+def _cache_evidence(cache_dir: Path, plan: Any, context: str) -> dict[str, Any] | None:
+    """Bind delivered context to the exact structured cache row used by preflight."""
+    db_path = cache_dir / "cache.db"
+    try:
+        st = db_path.lstat()
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            return None
+        key = f"docrequest-v4:{plan.ecosystem}:{plan.package}:{plan.target_version}"
+        uri = f"file:{quote(str(db_path))}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=0.2) as con:
+            con.execute("PRAGMA query_only=ON")
+            row = con.execute(
+                "SELECT value, fetched_at, value_bytes FROM docs_cache WHERE key=?",
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        value, fetched_at, value_bytes = row
+        parsed = json.loads(value)
+        source_url = parsed.get("source_url")
+        if (
+            parsed.get("version") != plan.target_version
+            or not isinstance(source_url, str)
+            or not source_url.startswith("https://")
+            or source_url not in context
+            or not isinstance(fetched_at, (int, float))
+            or not isinstance(value_bytes, int)
+        ):
+            return None
+        return {
+            "cache_key": key,
+            "cache_fetched_at": fetched_at,
+            "cache_value_bytes": value_bytes,
+            "cache_value_sha256": hashlib.sha256(value.encode()).hexdigest(),
+            "source": parsed.get("source"),
+            "source_url": source_url,
+        }
+    except (OSError, sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def _native_callback(
     settings: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, str] | None:
@@ -368,19 +423,26 @@ def _native_callback(
             "DOCS_PREFLIGHT_STATUS=prepared\n" in context
             or "DOCS_PREFLIGHT_STATUS=prepared_stale\n" in context
         )
+        evidence = (
+            _cache_evidence(settings["cache_dir"], plan, context) if retrieved else None
+        )
+        retrieved = retrieved and evidence is not None
         receipt.update(
             {
                 "status": "retrieved" if retrieved else "failed",
-                "error": None if retrieved else (error or "invalid_delivery_frame"),
+                "error": None
+                if retrieved
+                else (error or "cache_evidence_missing_or_mismatched"),
                 "query": plan.query,
                 "selection": plan.selection,
                 "context_sha256": hashlib.sha256(context.encode()).hexdigest()
                 if retrieved
                 else None,
+                "cache_evidence": evidence,
             }
         )
         _atomic_receipt(receipt_dir, receipt)
-        return framed
+        return framed if retrieved else _missing(receipt["error"])
     except Exception:
         receipt.update({"status": "failed", "error": "preflight_failed"})
         _atomic_receipt(receipt_dir, receipt)

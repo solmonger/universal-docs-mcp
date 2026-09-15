@@ -21,7 +21,7 @@ Markets, news, papers, therapy, generic factual research, and other turns withou
 
 ## Trusted evidence boundary
 
-1. The hook obtains the session working directory or Git root from Hermes-owned session state, never from prompt-supplied paths.
+1. The hook obtains the session working directory or Git root from Hermes-owned runtime state: a validated session database row, or Hermes's absolute `TERMINAL_CWD` workspace binding when the persisted row is blank. Prompt text, repository content, and tool output never select paths.
 2. It reads only supported manifests and bounded regular source files beneath that root using descriptor-relative, no-follow semantics.
 3. Package identity must come from a locally parsed registry dependency pin. Prompt text may disambiguate among locally proven candidates but may not invent a package, version, source path, registry, or URL.
 4. Exact versions are required. Ranges, conflicting pins, nonregistry references, malformed manifests, missing source attribution, and ambiguous candidate sets abstain.
@@ -51,7 +51,7 @@ When before/after manifest evidence exists, the existing dependency-change plann
 
 ## Receipts and abstention
 
-Every eligible evaluation writes a machine-readable receipt, including abstentions and failures. Receipt statuses are `selected`, `abstained`, `retrieved`, and `failed`; reasons are stable machine-readable tokens. A `retrieved` receipt must correspond to returned context and cache/read evidence. Registration, process presence, handshake, `cache_stats`, and assistant-authored smoke probes do not count as consumption.
+Every eligible evaluation writes a machine-readable receipt, including abstentions and failures. Receipt statuses are `selected`, `abstained`, `retrieved`, and `failed`; reasons are stable machine-readable tokens. A `retrieved` receipt must bind the returned context to the exact `docrequest-v4:{ecosystem}:{package}:{version}` cache key, cache fetch time, source and source URL, byte count, cache-value SHA-256, and injected-context SHA-256. The cache source URL must occur in the injected context; a valid frame without that binding fails closed as `cache_evidence_missing_or_mismatched`. Registration, process presence, handshake, `cache_stats`, and assistant-authored smoke probes do not count as consumption.
 
 The hook injects a concise abstention marker only when the absence of documentation materially affects the task. It never fabricates documentation or silently falls back to latest versions.
 

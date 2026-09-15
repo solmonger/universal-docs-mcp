@@ -41,12 +41,18 @@ def _profile(tmp_path: Path, root: Path, session_id: str = "session-1") -> Path:
 def _executable(tmp_path: Path, *, sleep: float = 0) -> Path:
     exe = tmp_path / "context-cli"
     body = (
-        "import json,sys,time\n"
+        "import json,os,sqlite3,sys,time\n"
         f"time.sleep({sleep!r})\n"
         "request=json.load(open(sys.argv[sys.argv.index('--request-file')+1]))\n"
         "assert request['package']=='click' and request['requested_version']=='8.1.7'\n"
+        "cache=os.environ['UNIVERSAL_DOCS_CACHE_DIR']; os.makedirs(cache,exist_ok=True)\n"
+        "value=json.dumps({'content':'fixture docs','source':'fixture','source_url':'https://fixture.invalid/click-8.1.7','fetched_at':time.time(),'version':'8.1.7'})\n"
+        "con=sqlite3.connect(os.path.join(cache,'cache.db'))\n"
+        "con.execute('CREATE TABLE IF NOT EXISTS docs_cache (key TEXT PRIMARY KEY,value TEXT NOT NULL,fetched_at REAL NOT NULL,value_bytes INTEGER NOT NULL DEFAULT 0)')\n"
+        "con.execute('INSERT OR REPLACE INTO docs_cache VALUES (?,?,?,?)',('docrequest-v4:python:click:8.1.7',value,time.time(),len(value.encode())))\n"
+        "con.commit(); con.close()\n"
         "print(json.dumps({'schema':'universal-docs.context/v1','status':'prepared',"
-        "'context':'UNIVERSAL-DOCS PREFLIGHT CONTEXT PACKET v1\\nSource URL: fixture://click-8.1.7\\nExact docs', 'error':None}))\n"
+        "'context':'UNIVERSAL-DOCS PREFLIGHT CONTEXT PACKET v1\\nSource URL: https://fixture.invalid/click-8.1.7\\nExact docs', 'error':None}))\n"
     )
     exe.write_text("#!" + sys.executable + "\n" + body)
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
@@ -55,6 +61,18 @@ def _executable(tmp_path: Path, *, sleep: float = 0) -> Path:
 
 def _native_context(exe: Path, timeout_ms: int = 1000) -> Context:
     return Context({"mode": "native", "executable": str(exe), "timeout_ms": timeout_ms})
+
+
+def _frame_only_executable(tmp_path: Path) -> Path:
+    exe = tmp_path / "frame-only-cli"
+    exe.write_text(
+        "#!" + sys.executable + "\n"
+        "import json\n"
+        "print(json.dumps({'schema':'universal-docs.context/v1','status':'prepared',"
+        "'context':'UNIVERSAL-DOCS PREFLIGHT CONTEXT PACKET v1\\nSource URL: https://fixture.invalid/click-8.1.7\\nFake docs','error':None}))\n"
+    )
+    exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
+    return exe
 
 
 def test_current_selector_uses_exact_imported_pin_and_symbols(tmp_path):
@@ -101,7 +119,7 @@ def test_native_mode_retrieves_and_writes_truthful_receipt(tmp_path, monkeypatch
         parent_session_id="parent-session",
     )
     assert "STATUS=prepared" in result["context"]
-    assert "fixture://click-8.1.7" in result["context"]
+    assert "https://fixture.invalid/click-8.1.7" in result["context"]
     receipts = list((profile / "receipts" / "universal-docs").glob("*.json"))
     assert len(receipts) == 1
     receipt = json.loads(receipts[0].read_text())
@@ -109,9 +127,33 @@ def test_native_mode_retrieves_and_writes_truthful_receipt(tmp_path, monkeypatch
     assert receipt["package"] == "click"
     assert receipt["target_version"] == "8.1.7"
     assert receipt["context_sha256"]
+    assert receipt["cache_evidence"]["cache_key"] == "docrequest-v4:python:click:8.1.7"
+    assert (
+        receipt["cache_evidence"]["source_url"] == "https://fixture.invalid/click-8.1.7"
+    )
     assert not list(
         (profile / "receipts" / "universal-docs" / ".requests").glob("*.json")
     )
+
+
+def test_prepared_frame_without_exact_cache_evidence_fails_closed(
+    tmp_path, monkeypatch
+):
+    root = _project(tmp_path)
+    profile = _profile(tmp_path, root)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    plugin = load_plugin(profile)
+    ctx = _native_context(_frame_only_executable(tmp_path))
+    plugin.register(ctx)
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug click API"
+    )
+    assert "STATUS=missing" in result["context"]
+    receipt = json.loads(
+        next((profile / "receipts" / "universal-docs").glob("*.json")).read_text()
+    )
+    assert receipt["status"] == "failed"
+    assert receipt["error"] == "cache_evidence_missing_or_mismatched"
 
 
 def test_unrelated_turn_does_not_select_retrieve_or_write_receipt(

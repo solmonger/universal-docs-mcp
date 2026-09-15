@@ -16,6 +16,10 @@ config_schema:
     type: string
     default: ""
     description: Comma-separated exact profile names that must not register this hook.
+  cache_dir:
+    type: string
+    required: false
+    description: Absolute canonical Universal Docs cache directory used for retrieval evidence.
   executable:
     type: string
     required: true
