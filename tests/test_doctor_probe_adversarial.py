@@ -59,6 +59,34 @@ def _probe(tmp_path: Path, body: str, *, timeout_ms: int = 1000):
     )
 
 
+def _assert_descendant_stopped(pid: int, *, timeout: float = 3.0) -> None:
+    """A killed descendant must stop running.
+
+    CI containers can leave the process visible as an unreaped zombie, where
+    ``kill(pid, 0)`` still succeeds; a zombie is not a running process. Poll
+    briefly so slow deaths also pass, and fail if it is genuinely alive.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        state = ""
+        try:
+            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            state = stat_text.rsplit(") ", 1)[1].split()[0]
+        except (OSError, IndexError):
+            state = ""
+        if state == "Z":
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"descendant pid {pid} still running (state={state or 'unknown'})"
+            )
+        time.sleep(0.05)
+
+
 @pytest.mark.parametrize(
     ("label", "body", "expected"),
     [
@@ -188,8 +216,7 @@ def test_probe_kills_descendants_after_timeout_and_parent_exit(tmp_path: Path):
     assert reason == "probe_timeout"
     assert time.monotonic() - started < 1.0
     child_pid = int(pid_file.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    _assert_descendant_stopped(child_pid)
 
     pid_file = tmp_path / "parent-exit.pid"
     body = (
@@ -202,8 +229,7 @@ def test_probe_kills_descendants_after_timeout_and_parent_exit(tmp_path: Path):
     assert reason == "probe_no_stdout"
     assert time.monotonic() - started < 1.0
     child_pid = int(pid_file.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    _assert_descendant_stopped(child_pid)
 
 
 def test_success_metadata_is_source_bearing_and_receipt_safe(

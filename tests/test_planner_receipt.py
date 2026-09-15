@@ -22,7 +22,10 @@ def test_receipt_producer_reconciles_rows_and_checked_in_semantics(tmp_path: Pat
     output = tmp_path / "receipt.json"
     receipt = produce(output)
     checked_in = json.loads(
-        Path("benchmarks/version_guard/planner_receipt.json").read_text()
+        (
+            Path(__file__).resolve().parents[1]
+            / "benchmarks/version_guard/planner_receipt.json"
+        ).read_text()
     )
     rows = receipt["fixture_outcomes"]
     assert receipt["fixture_count"] == len(FIXTURES) == len(rows)
