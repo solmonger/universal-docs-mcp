@@ -15,29 +15,150 @@ from universal_docs_mcp.planner import plan_dependency_changes
 
 FIXTURES = [
     ("add", "", "demo==1.0.0\n", None, "selected", "exact_dependency_added"),
-    ("upgrade", "demo==1.0.0\n", "demo==2.0.0\n", None, "selected", "exact_dependency_changed"),
-    ("downgrade", "demo==2.0.0\n", "demo==1.0.0\n", None, "selected", "exact_dependency_changed"),
-    ("explicit-range", "demo==1.0.0\nother==2.0.0\n", "demo>=2\nother==2.0.0\n", "demo", "abstained", "target_version_unresolved"),
+    (
+        "upgrade",
+        "demo==1.0.0\n",
+        "demo==2.0.0\n",
+        None,
+        "selected",
+        "exact_dependency_changed",
+    ),
+    (
+        "downgrade",
+        "demo==2.0.0\n",
+        "demo==1.0.0\n",
+        None,
+        "selected",
+        "exact_dependency_changed",
+    ),
+    (
+        "explicit-range",
+        "demo==1.0.0\nother==2.0.0\n",
+        "demo>=2\nother==2.0.0\n",
+        "demo",
+        "abstained",
+        "target_version_unresolved",
+    ),
     ("remove", "demo==1.0.0\n", "", None, "abstained", "dependency_removed"),
-    ("unchanged", "demo==1.0.0\n", "demo==1.0.0\n", None, "abstained", "dependency_unchanged"),
-    ("direct-ref", "demo==1.0.0\n", "demo @ https://example.test/demo.whl\n", None, "abstained", "non_registry_reference"),
-    ("previous-unresolved", "demo>=1\n", "demo==2.0.0\n", "demo", "abstained", "previous_version_unresolved"),
-    ("absent-amid-other", "demo==1.0.0\nother==2.0.0\n", "demo==1.1.0\nother==2.1.0\n", "missing", "abstained", "unknown_package"),
-    ("canonical", "Demo_Pkg==1.0.0\n", "demo-pkg==2.0.0\n", None, "selected", "exact_dependency_changed"),
-    ("extras", "demo[socks]==1.0.0\n", "demo[socks]==1.1.0\n", None, "selected", "exact_dependency_changed"),
-    ("marker", "demo==1.0.0\n", "demo==1.1.0; python_version >= '3.10'\n", None, "selected", "exact_dependency_changed"),
-    ("multiple", "a==1.0.0\nb==1.0.0\n", "a==2.0.0\nb==2.0.0\n", None, "abstained", "multiple_dependency_changes"),
-    ("multiple-explicit", "a==1.0.0\nb==1.0.0\n", "a==2.0.0\nb==2.0.0\n", "b", "selected", "exact_dependency_changed"),
-    ("duplicate", "demo==1.0.0\n", "demo==1.1.0\nDemo==1.1.0\n", None, "abstained", "duplicate_dependency"),
-    ("conflict", "demo==1.0.0\n", "demo==1.1.0\ndemo==1.2.0\n", None, "abstained", "conflicting_dependency_pins"),
+    (
+        "unchanged",
+        "demo==1.0.0\n",
+        "demo==1.0.0\n",
+        None,
+        "abstained",
+        "dependency_unchanged",
+    ),
+    (
+        "direct-ref",
+        "demo==1.0.0\n",
+        "demo @ https://example.test/demo.whl\n",
+        None,
+        "abstained",
+        "non_registry_reference",
+    ),
+    (
+        "previous-unresolved",
+        "demo>=1\n",
+        "demo==2.0.0\n",
+        "demo",
+        "abstained",
+        "previous_version_unresolved",
+    ),
+    (
+        "absent-amid-other",
+        "demo==1.0.0\nother==2.0.0\n",
+        "demo==1.1.0\nother==2.1.0\n",
+        "missing",
+        "abstained",
+        "unknown_package",
+    ),
+    (
+        "canonical",
+        "Demo_Pkg==1.0.0\n",
+        "demo-pkg==2.0.0\n",
+        None,
+        "selected",
+        "exact_dependency_changed",
+    ),
+    (
+        "extras",
+        "demo[socks]==1.0.0\n",
+        "demo[socks]==1.1.0\n",
+        None,
+        "selected",
+        "exact_dependency_changed",
+    ),
+    (
+        "marker",
+        "demo==1.0.0\n",
+        "demo==1.1.0; python_version >= '3.10'\n",
+        None,
+        "selected",
+        "exact_dependency_changed",
+    ),
+    (
+        "multiple",
+        "a==1.0.0\nb==1.0.0\n",
+        "a==2.0.0\nb==2.0.0\n",
+        None,
+        "abstained",
+        "multiple_dependency_changes",
+    ),
+    (
+        "multiple-explicit",
+        "a==1.0.0\nb==1.0.0\n",
+        "a==2.0.0\nb==2.0.0\n",
+        "b",
+        "selected",
+        "exact_dependency_changed",
+    ),
+    (
+        "duplicate",
+        "demo==1.0.0\n",
+        "demo==1.1.0\nDemo==1.1.0\n",
+        None,
+        "abstained",
+        "duplicate_dependency",
+    ),
+    (
+        "conflict",
+        "demo==1.0.0\n",
+        "demo==1.1.0\ndemo==1.2.0\n",
+        None,
+        "abstained",
+        "conflicting_dependency_pins",
+    ),
     ("malformed", "demo==1.0.0\n", "demo [\n", None, "abstained", "malformed_manifest"),
-    ("pep621", "[project]\ndependencies=[]\n", "[project]\ndependencies=['demo==1.0.0']\n", None, "selected", "exact_dependency_added"),
-    ("legacy", "demo==0.9.0\n", "demo==1\n", None, "selected", "exact_dependency_changed"),
-    ("compound", "demo==1.0.0\n", "demo>=1.0,<2.0\n", None, "abstained", "target_version_unresolved"),
+    (
+        "pep621",
+        "[project]\ndependencies=[]\n",
+        "[project]\ndependencies=['demo==1.0.0']\n",
+        None,
+        "selected",
+        "exact_dependency_added",
+    ),
+    (
+        "legacy",
+        "demo==0.9.0\n",
+        "demo==1\n",
+        None,
+        "selected",
+        "exact_dependency_changed",
+    ),
+    (
+        "compound",
+        "demo==1.0.0\n",
+        "demo>=1.0,<2.0\n",
+        None,
+        "abstained",
+        "target_version_unresolved",
+    ),
 ]
 
 
-def _fixture_paths(root: Path, fixture_id: str, before: str, after: str) -> tuple[Path, Path]:
+def _fixture_paths(
+    root: Path, fixture_id: str, before: str, after: str
+) -> tuple[Path, Path]:
     directory = root / fixture_id
     directory.mkdir()
     filename = "pyproject.toml" if fixture_id == "pep621" else "requirements.txt"
@@ -81,7 +202,14 @@ def produce(output: Path) -> dict[str, Any]:
     timings: list[float] = []
     with tempfile.TemporaryDirectory(prefix="version-guard-planner-") as temporary:
         root = Path(temporary).resolve()
-        for fixture_id, before, after, package, expected_status, expected_reason in FIXTURES:
+        for (
+            fixture_id,
+            before,
+            after,
+            package,
+            expected_status,
+            expected_reason,
+        ) in FIXTURES:
             before_path, after_path = _fixture_paths(root, fixture_id, before, after)
             started = time.perf_counter()
             plan = plan_dependency_changes(
@@ -111,13 +239,24 @@ def produce(output: Path) -> dict[str, Any]:
         "median_planning_ms": round(statistics.median(timings), 3),
         "pass_count": sum(row["pass"] for row in rows),
         "precision_percent": round(
-            100 * sum(row["pass"] and row["actual_status"] == "selected" for row in rows) / len(selected), 3
-        ) if selected else 100.0,
+            100
+            * sum(row["pass"] and row["actual_status"] == "selected" for row in rows)
+            / len(selected),
+            3,
+        )
+        if selected
+        else 100.0,
         "required_abstention_percent": round(
-            100 * sum(row["pass"] and row["expected_status"] == "abstained" for row in rows) / len(expected_abstained), 3
-        ) if expected_abstained else 100.0,
+            100
+            * sum(row["pass"] and row["expected_status"] == "abstained" for row in rows)
+            / len(expected_abstained),
+            3,
+        )
+        if expected_abstained
+        else 100.0,
         "silent_latest_substitutions": sum(
-            row["actual_status"] == "selected" and not row["plan"].get("target_version") for row in rows
+            row["actual_status"] == "selected" and not row["plan"].get("target_version")
+            for row in rows
         ),
     }
     receipt = {

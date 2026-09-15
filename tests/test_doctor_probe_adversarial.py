@@ -46,9 +46,7 @@ def _hook(tmp_path: Path, body: str) -> Path:
     path.write_text(
         f"#!{sys.executable}\n"
         "import os, sys, time, json\n"
-        "sys.stdin.buffer.read()\n"
-        + body
-        + "\n",
+        "sys.stdin.buffer.read()\n" + body + "\n",
         encoding="utf-8",
     )
     path.chmod(0o700)
@@ -71,7 +69,7 @@ def _probe(tmp_path: Path, body: str, *, timeout_ms: int = 1000):
         ("non-object", "sys.stdout.write('[]')", "probe_result_not_object"),
         (
             "duplicate keys",
-            "sys.stdout.write('{\"a\":1,\"a\":2}')",
+            'sys.stdout.write(\'{"a":1,"a":2}\')',
             "probe_duplicate_json_keys",
         ),
         (
@@ -106,7 +104,9 @@ def _probe(tmp_path: Path, body: str, *, timeout_ms: int = 1000):
         ),
     ],
 )
-def test_probe_runtime_result_classification(tmp_path: Path, label: str, body: str, expected: str):
+def test_probe_runtime_result_classification(
+    tmp_path: Path, label: str, body: str, expected: str
+):
     if "signal." in body:
         body = "import signal\n" + body
     started = time.monotonic()
@@ -132,25 +132,45 @@ def test_probe_preflight_taxonomy_and_strict_result_shape(tmp_path: Path):
         "response_too_large",
     ):
         body = (
-            "sys.stdout.write(" + repr(
+            "sys.stdout.write("
+            + repr(
                 json.dumps(
                     {
                         "decision": "block",
                         "reason": f"Universal Docs preflight blocked this prompt: {reason}.",
                     }
                 )
-            ) + ")"
+            )
+            + ")"
         )
         meta, actual = _probe(tmp_path / reason, body)
         assert meta == {} and actual == reason
 
     for body, expected in (
-        ("sys.stdout.write(json.dumps({'extra': 1, 'hookSpecificOutput': {}}))", "probe_result_extra_fields"),
-        ("sys.stdout.write(json.dumps({'hookSpecificOutput': {'event': 'UserPromptSubmit', 'additionalContext': 'x'}}))", "probe_result_invalid_fields"),
-        ("sys.stdout.write(json.dumps({'hookSpecificOutput': {'hookEventName': 'wrong', 'additionalContext': 'x'}}))", "probe_result_invalid_fields"),
-        ("sys.stdout.write(json.dumps({'hookSpecificOutput': {}}))", "probe_result_invalid_fields"),
-        ("sys.stdout.write(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 3}}))", "probe_result_missing_required_fields"),
-        ("sys.stdout.write(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'x'}}))", "probe_source_contract_invalid"),
+        (
+            "sys.stdout.write(json.dumps({'extra': 1, 'hookSpecificOutput': {}}))",
+            "probe_result_extra_fields",
+        ),
+        (
+            "sys.stdout.write(json.dumps({'hookSpecificOutput': {'event': 'UserPromptSubmit', 'additionalContext': 'x'}}))",
+            "probe_result_invalid_fields",
+        ),
+        (
+            "sys.stdout.write(json.dumps({'hookSpecificOutput': {'hookEventName': 'wrong', 'additionalContext': 'x'}}))",
+            "probe_result_invalid_fields",
+        ),
+        (
+            "sys.stdout.write(json.dumps({'hookSpecificOutput': {}}))",
+            "probe_result_invalid_fields",
+        ),
+        (
+            "sys.stdout.write(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 3}}))",
+            "probe_result_missing_required_fields",
+        ),
+        (
+            "sys.stdout.write(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'x'}}))",
+            "probe_source_contract_invalid",
+        ),
     ):
         meta, actual = _probe(tmp_path / str(abs(hash(body))), body)
         assert meta == {} and actual == expected
@@ -186,19 +206,36 @@ def test_probe_kills_descendants_after_timeout_and_parent_exit(tmp_path: Path):
         os.kill(child_pid, 0)
 
 
-def test_success_metadata_is_source_bearing_and_receipt_safe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_success_metadata_is_source_bearing_and_receipt_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     secret = "SOURCE_BODY_SECRET_MARKER"
     context = (
         "UNIVERSAL-DOCS PREFLIGHT CONTEXT PACKET v1\n"
         'Target package: "fixture-docs"\nTarget version: "1.2.3"\n'
         'Source kind: "pypi_description"\nSource version binding: "registry_version"\n'
-        + "Source SHA-256: " + "a" * 64 + "\n"
+        + "Source SHA-256: "
+        + "a" * 64
+        + "\n"
         'Freshness policy: "require_check"\nFreshness state: "upstream_checked"\n'
         "--- BEGIN UNTRUSTED DOCUMENTATION DATA ---\n"
         + secret
         + "\n--- END UNTRUSTED DOCUMENTATION DATA ---\n"
     )
-    body = "sys.stdout.write(" + repr(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}})) + ")"
+    body = (
+        "sys.stdout.write("
+        + repr(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": context,
+                    }
+                }
+            )
+        )
+        + ")"
+    )
     meta, reason = _probe(tmp_path / "success", body)
     assert reason == "source_bearing"
     assert meta["package"] == REQUEST["package"]
@@ -212,7 +249,10 @@ def test_success_metadata_is_source_bearing_and_receipt_safe(tmp_path: Path, mon
     monkeypatch.setenv("OPENAI_API_KEY", secret)
     # The probe's explicit environment is intentionally independent of all three.
     env_capture = tmp_path / "env.json"
-    script = _hook(tmp_path / "env", f"open({str(env_capture)!r}, 'w').write(json.dumps(dict(os.environ)))")
+    script = _hook(
+        tmp_path / "env",
+        f"open({str(env_capture)!r}, 'w').write(json.dumps(dict(os.environ)))",
+    )
     product_cli._doctor_probe(script, _adapter(tmp_path / "env"), REQUEST)
     env = json.loads(env_capture.read_text())
     assert env.get("HOME") == "/personal/scratch-home"
@@ -220,7 +260,9 @@ def test_success_metadata_is_source_bearing_and_receipt_safe(tmp_path: Path, mon
     assert env.get("OPENAI_API_KEY") is None
 
 
-def test_doctor_emission_stays_bounded_for_probe_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_doctor_emission_stays_bounded_for_probe_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     root = tmp_path / "root"
     (root / ".universal-docs").mkdir(parents=True)
     (root / ".claude").mkdir()
@@ -231,6 +273,7 @@ def test_doctor_emission_stays_bounded_for_probe_failure(tmp_path: Path, monkeyp
     monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_COMMAND_HOOK", str(hook))
     monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_PREFLIGHT", "/bin/true")
     import io
+
     out = io.BytesIO()
     rc = product_cli.main(["doctor", "--project-root", str(root)], stdout=out)
     assert rc == 1

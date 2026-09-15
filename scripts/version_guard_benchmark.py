@@ -43,7 +43,9 @@ class BenchmarkError(ValueError):
 def _safe_text(value: Any) -> str:
     text = str(value)
     text = _SECRET.sub(r"\1\2[redacted]", text)
-    text = re.sub(r"(?<![A-Za-z0-9_])/(?:Users|home|private|tmp|var)/[^\s,;]+", "[path]", text)
+    text = re.sub(
+        r"(?<![A-Za-z0-9_])/(?:Users|home|private|tmp|var)/[^\s,;]+", "[path]", text
+    )
     return text
 
 
@@ -91,8 +93,25 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
         raise BenchmarkError(f"manifest cases must contain 1..{MAX_CASES} entries")
     cases = []
     seen: set[str] = set()
-    required = {"id", "ecosystem", "package", "target_version", "task", "workspace_fixture", "test_command"}
-    optional = {"context_files", "manual_context_file", "automatic_context_file", "oracle_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"}
+    required = {
+        "id",
+        "ecosystem",
+        "package",
+        "target_version",
+        "task",
+        "workspace_fixture",
+        "test_command",
+    }
+    optional = {
+        "context_files",
+        "manual_context_file",
+        "automatic_context_file",
+        "oracle_file",
+        "context_profile",
+        "expected_failure_class",
+        "evidence_type",
+        "evidence_note",
+    }
     for raw in manifest["cases"]:
         if not isinstance(raw, dict):
             raise BenchmarkError("each case must be an object")
@@ -111,16 +130,30 @@ def validate_manifest(manifest: Any) -> list[dict[str, Any]]:
         if fixture_path.is_absolute() or ".." in fixture_path.parts:
             raise BenchmarkError(f"case {case_id} workspace_fixture must be relative")
         case = dict(raw)
-        case["test_command"] = _argv(raw["test_command"], f"case {case_id} test_command")
+        case["test_command"] = _argv(
+            raw["test_command"], f"case {case_id} test_command"
+        )
         if "context_files" in raw:
             values = raw["context_files"]
             if not isinstance(values, dict) or len(values) > len(ARMS):
-                raise BenchmarkError(f"case {case_id} context_files must be a bounded object")
+                raise BenchmarkError(
+                    f"case {case_id} context_files must be a bounded object"
+                )
             for arm, value in values.items():
                 if arm not in ARMS:
-                    raise BenchmarkError(f"case {case_id} context_files has unknown arm")
+                    raise BenchmarkError(
+                        f"case {case_id} context_files has unknown arm"
+                    )
                 _bounded_string(value, f"case {case_id} {arm} context file")
-        for key in ("manual_context_file", "automatic_context_file", "oracle_file", "context_profile", "expected_failure_class", "evidence_type", "evidence_note"):
+        for key in (
+            "manual_context_file",
+            "automatic_context_file",
+            "oracle_file",
+            "context_profile",
+            "expected_failure_class",
+            "evidence_type",
+            "evidence_note",
+        ):
             if key in raw:
                 _bounded_string(raw[key], f"case {case_id} {key}")
         cases.append(case)
@@ -176,7 +209,9 @@ def _diff_hash(before: dict[str, bytes], after: dict[str, bytes]) -> str:
     for name in sorted(set(before) | set(after)):
         if before.get(name) != after.get(name):
             marker = after.get(name)
-            changed.append(name.encode() + b"\0" + (marker if marker is not None else b"<deleted>"))
+            changed.append(
+                name.encode() + b"\0" + (marker if marker is not None else b"<deleted>")
+            )
     return _sha256(b"".join(changed))
 
 
@@ -192,7 +227,9 @@ def _context_info(path: Path | None) -> tuple[str | None, int]:
     return _sha256(data), len(data)
 
 
-def _oracle_info(root: Path, value: str | None) -> tuple[Path | None, bytes | None, str | None, int]:
+def _oracle_info(
+    root: Path, value: str | None
+) -> tuple[Path | None, bytes | None, str | None, int]:
     if value is None:
         return None, None, None, 0
     relative = Path(value)
@@ -278,7 +315,9 @@ def _run_bounded(
     reader.join()
     return {
         "returncode": None if timed_out else process.returncode,
-        "status": "timeout" if timed_out else ("passed" if process.returncode == 0 else "failed"),
+        "status": "timeout"
+        if timed_out
+        else ("passed" if process.returncode == 0 else "failed"),
         "output_sha256": digest.hexdigest(),
         "output_bytes": len(captured),
         "output_truncated": truncated,
@@ -306,7 +345,9 @@ def _write_inputs(workspace: Path, case: dict[str, Any], context: Path | None) -
     control = workspace / ".benchmark"
     (control / "home").mkdir(parents=True)
     (control / "tmp").mkdir()
-    (control / "task.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
+    (control / "task.json").write_text(
+        json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8"
+    )
     if context is not None:
         shutil.copyfile(context, control / "context.txt")
 
@@ -326,16 +367,24 @@ def run_case(
     if arm not in ARMS:
         raise BenchmarkError(f"unknown arm: {arm}")
     agent_argv = _argv(agent_argv, "agent command")
-    fixture = _relative_path(fixture_root, case["workspace_fixture"], "workspace_fixture")
+    fixture = _relative_path(
+        fixture_root, case["workspace_fixture"], "workspace_fixture"
+    )
     if not fixture.is_dir():
         raise BenchmarkError(f"workspace fixture not found for {case['id']}")
     _validate_fixture_tree(fixture)
     context_name = _context_value(case, arm)
-    context = None if context_name is None else _relative_path(manifest_root, context_name, "context file")
+    context = (
+        None
+        if context_name is None
+        else _relative_path(manifest_root, context_name, "context file")
+    )
     if context is not None and not context.is_file():
         raise BenchmarkError(f"context file not found for {case['id']}")
     context_sha256, context_bytes = _context_info(context)
-    oracle, oracle_data, oracle_sha256, oracle_bytes = _oracle_info(manifest_root, case.get("oracle_file"))
+    oracle, oracle_data, oracle_sha256, oracle_bytes = _oracle_info(
+        manifest_root, case.get("oracle_file")
+    )
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="version-guard-oracle-") as oracle_private:
@@ -344,17 +393,26 @@ def run_case(
             oracle_snapshot = Path(oracle_private) / "oracle.py"
             oracle_snapshot.write_bytes(oracle_data)
             oracle_snapshot.chmod(0o600)
-        with tempfile.TemporaryDirectory(prefix="version-guard-benchmark-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="version-guard-benchmark-"
+        ) as temporary:
             workspace = Path(temporary) / "workspace"
             shutil.copytree(fixture, workspace)
             _write_inputs(workspace, case, context)
             before = _snapshot(workspace)
             agent_status = "passed"
             agent_error = None
-            agent_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
+            agent_output = {
+                "output_sha256": _sha256(b""),
+                "output_bytes": 0,
+                "output_truncated": False,
+            }
             try:
                 agent_output = _run_bounded(
-                    agent_argv, cwd=workspace, env=_env(workspace), timeout=timeout_seconds
+                    agent_argv,
+                    cwd=workspace,
+                    env=_env(workspace),
+                    timeout=timeout_seconds,
                 )
                 agent_exit = agent_output["returncode"]
                 agent_status = agent_output["status"]
@@ -369,7 +427,11 @@ def run_case(
             after = _snapshot(workspace)
             test_status = "not_run"
             test_exit = None
-            test_output = {"output_sha256": _sha256(b""), "output_bytes": 0, "output_truncated": False}
+            test_output = {
+                "output_sha256": _sha256(b""),
+                "output_bytes": 0,
+                "output_truncated": False,
+            }
             test_command = _argv(case["test_command"], "test_command")
             if agent_status == "passed":
                 try:
@@ -404,7 +466,9 @@ def run_case(
                 "output_truncated": test_output["output_truncated"],
             }
             if oracle is not None:
-                test_receipt.update({"oracle_sha256": oracle_sha256, "oracle_bytes": oracle_bytes})
+                test_receipt.update(
+                    {"oracle_sha256": oracle_sha256, "oracle_bytes": oracle_bytes}
+                )
             result = {
                 "id": case["id"],
                 "arm": arm,
@@ -417,7 +481,11 @@ def run_case(
                 "context_sha256": context_sha256,
                 "context_bytes": context_bytes,
                 "workspace_diff_sha256": _diff_hash(before, after),
-                "agent": {"status": agent_status, "exit_code": agent_exit, "error": agent_error},
+                "agent": {
+                    "status": agent_status,
+                    "exit_code": agent_exit,
+                    "error": agent_error,
+                },
                 "test": test_receipt,
                 "elapsed_seconds": round(time.monotonic() - started, 6),
             }
@@ -428,7 +496,8 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
     ordered = sorted(results, key=lambda item: (item["id"], item["arm"]))
     passed = sum(item["test"]["command_status"] == "passed" for item in ordered)
     timeouts = sum(
-        item["agent"]["status"] == "timeout" or item["test"]["command_status"] == "timeout"
+        item["agent"]["status"] == "timeout"
+        or item["test"]["command_status"] == "timeout"
         for item in ordered
     )
     errors = sum(
@@ -442,7 +511,11 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
         "timeouts": timeouts,
         "errors": errors,
         "by_arm": {
-            arm: sum(item["test"]["command_status"] == "passed" for item in ordered if item["arm"] == arm)
+            arm: sum(
+                item["test"]["command_status"] == "passed"
+                for item in ordered
+                if item["arm"] == arm
+            )
             for arm in ARMS
         },
     }
@@ -525,7 +598,9 @@ def _main() -> int:
     if bool(args.agent_command) == bool(args.agent_command_json):
         parser.error("provide exactly one of --agent-command or --agent-command-json")
     agent_argv = (
-        json.loads(args.agent_command_json) if args.agent_command_json else args.agent_command
+        json.loads(args.agent_command_json)
+        if args.agent_command_json
+        else args.agent_command
     )
     manifest_bytes = args.manifest.read_bytes()
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
@@ -544,9 +619,20 @@ def _main() -> int:
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.summary_output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     args.summary_output.write_text(markdown_summary(report), encoding="utf-8")
-    print(json.dumps({"artifact": str(args.output), "summary": str(args.summary_output), **report["aggregate"]}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "artifact": str(args.output),
+                "summary": str(args.summary_output),
+                **report["aggregate"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

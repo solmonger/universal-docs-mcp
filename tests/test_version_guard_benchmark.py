@@ -48,7 +48,9 @@ def _manifest(tmp_path: Path, **case_updates) -> tuple[dict, Path]:
 def test_fresh_workspace_and_argv_only_execution(tmp_path):
     manifest, fixture_root = _manifest(
         tmp_path,
-        test_command=_command("from pathlib import Path; raise SystemExit(0 if Path('changed.txt').read_text() == 'ok' else 1)"),
+        test_command=_command(
+            "from pathlib import Path; raise SystemExit(0 if Path('changed.txt').read_text() == 'ok' else 1)"
+        ),
     )
     agent = _command("from pathlib import Path; Path('changed.txt').write_text('ok')")
     first = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, agent)
@@ -110,8 +112,18 @@ def test_timeout_and_missing_executable_do_not_escape(tmp_path):
         _command("import time; time.sleep(1)"),
         timeout_seconds=0.02,
     )
-    missing = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, ["definitely-missing-executable"])
-    assert timeout["agent"] == {"status": "timeout", "exit_code": None, "error": "agent_timeout"}
+    missing = run_case(
+        manifest["cases"][0],
+        "control",
+        fixture_root,
+        tmp_path,
+        ["definitely-missing-executable"],
+    )
+    assert timeout["agent"] == {
+        "status": "timeout",
+        "exit_code": None,
+        "error": "agent_timeout",
+    }
     assert missing["agent"]["status"] == "error"
     assert missing["agent"]["error"] == "agent_not_executable"
 
@@ -169,13 +181,27 @@ def test_redaction_and_receipt_omit_paths_and_context_body(tmp_path):
 
 def test_aggregation_is_sorted_and_summary_is_human_readable():
     results = [
-        {"id": "b", "arm": "manual", "test": {"command_status": "failed"}, "agent": {"status": "passed"}},
-        {"id": "a", "arm": "control", "test": {"command_status": "passed"}, "agent": {"status": "passed"}},
+        {
+            "id": "b",
+            "arm": "manual",
+            "test": {"command_status": "failed"},
+            "agent": {"status": "passed"},
+        },
+        {
+            "id": "a",
+            "arm": "control",
+            "test": {"command_status": "passed"},
+            "agent": {"status": "passed"},
+        },
     ]
     summary = aggregate(results)
     assert summary["cases"] == 2
     assert summary["passed"] == 1
-    report = {"schema": "universal-docs.benchmark/v1", "aggregate": summary, "results": results}
+    report = {
+        "schema": "universal-docs.benchmark/v1",
+        "aggregate": summary,
+        "results": results,
+    }
     assert "# Version Guard benchmark" in markdown_summary(report)
     assert "| a | control | passed |" in markdown_summary(report)
 
@@ -219,7 +245,9 @@ def test_context_file_is_bounded_before_copy(tmp_path):
     manifest, fixture_root = _manifest(tmp_path, context_files={"manual": "context.md"})
     (tmp_path / "context.md").write_bytes(b"c" * (benchmark.MAX_CONTEXT_BYTES + 1))
     with pytest.raises(BenchmarkError, match="context"):
-        run_case(manifest["cases"][0], "manual", fixture_root, tmp_path, _command("pass"))
+        run_case(
+            manifest["cases"][0], "manual", fixture_root, tmp_path, _command("pass")
+        )
 
 
 def test_fixture_tree_rejects_symlinks_and_oversized_files(tmp_path):
@@ -228,7 +256,9 @@ def test_fixture_tree_rejects_symlinks_and_oversized_files(tmp_path):
     outside.write_text("outside")
     (fixture_root / "fixture" / "linked.txt").symlink_to(outside)
     with pytest.raises(BenchmarkError, match="symlink"):
-        run_case(manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass"))
+        run_case(
+            manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass")
+        )
 
     large_root = tmp_path / "large"
     large_root.mkdir()
@@ -237,7 +267,13 @@ def test_fixture_tree_rejects_symlinks_and_oversized_files(tmp_path):
         b"x" * (benchmark.MAX_FIXTURE_FILE_BYTES + 1)
     )
     with pytest.raises(BenchmarkError, match="fixture"):
-        run_case(manifest["cases"][0], "control", fixture_root, tmp_path / "large", _command("pass"))
+        run_case(
+            manifest["cases"][0],
+            "control",
+            fixture_root,
+            tmp_path / "large",
+            _command("pass"),
+        )
 
 
 def test_subprocess_output_is_streamed_capped_and_hashed(tmp_path):
@@ -281,10 +317,10 @@ def test_timed_out_process_is_cleaned_up(tmp_path):
         os.kill(pid, 0)
 
 
-
-
 def test_oracle_workspace_mutations_do_not_enter_agent_diff(tmp_path):
-    manifest, fixture_root = _manifest(tmp_path, test_command=_command("raise SystemExit(0)"))
+    manifest, fixture_root = _manifest(
+        tmp_path, test_command=_command("raise SystemExit(0)")
+    )
     oracle = tmp_path / "oracle.py"
     oracle.write_text(
         "import pathlib, sys\n"
@@ -293,15 +329,23 @@ def test_oracle_workspace_mutations_do_not_enter_agent_diff(tmp_path):
         "(workspace / 'original.txt').unlink()\n"
     )
     manifest["cases"][0]["oracle_file"] = "oracle.py"
-    agent = _command("from pathlib import Path; Path('agent.txt').write_text('agent change')")
-    with_oracle = run_case(manifest["cases"][0], "automatic", fixture_root, tmp_path, agent)
+    agent = _command(
+        "from pathlib import Path; Path('agent.txt').write_text('agent change')"
+    )
+    with_oracle = run_case(
+        manifest["cases"][0], "automatic", fixture_root, tmp_path, agent
+    )
     manifest["cases"][0].pop("oracle_file")
-    agent_only = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, agent)
+    agent_only = run_case(
+        manifest["cases"][0], "control", fixture_root, tmp_path, agent
+    )
     assert with_oracle["workspace_diff_sha256"] == agent_only["workspace_diff_sha256"]
 
 
 def test_external_oracle_is_blind_and_receives_edited_workspace(tmp_path):
-    manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py", test_command=_command("raise SystemExit(99)"))
+    manifest, fixture_root = _manifest(
+        tmp_path, oracle_file="oracle.py", test_command=_command("raise SystemExit(99)")
+    )
     (fixture_root / "fixture" / "app.py").write_text("original = True\n")
     oracle = tmp_path / "oracle.py"
     oracle.write_text(
@@ -312,7 +356,9 @@ def test_external_oracle_is_blind_and_receives_edited_workspace(tmp_path):
         "(workspace / 'oracle_seen.txt').write_text(str(workspace))\n"
         "raise SystemExit(0 if ok else 1)\n"
     )
-    agent = _command("from pathlib import Path; Path('app.py').write_text('edited = True\\n')")
+    agent = _command(
+        "from pathlib import Path; Path('app.py').write_text('edited = True\\n')"
+    )
     result = run_case(manifest["cases"][0], "automatic", fixture_root, tmp_path, agent)
     assert result["test"]["command_status"] == "passed"
     assert result["test"]["exit_code"] == 0
@@ -327,7 +373,9 @@ def test_oracle_execution_uses_pre_agent_snapshot(tmp_path):
     original = b"raise SystemExit(7)\n"
     replacement = b"raise SystemExit(9)\n"
     oracle.write_bytes(original)
-    agent = _command(f"from pathlib import Path; Path({str(oracle)!r}).write_bytes({replacement!r})")
+    agent = _command(
+        f"from pathlib import Path; Path({str(oracle)!r}).write_bytes({replacement!r})"
+    )
     result = run_case(manifest["cases"][0], "automatic", fixture_root, tmp_path, agent)
     assert result["test"]["command_status"] == "failed"
     assert result["test"]["exit_code"] == 7
@@ -340,24 +388,34 @@ def test_external_oracle_receipt_binds_hash_and_hides_path(tmp_path):
     manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py")
     oracle = tmp_path / "oracle.py"
     oracle.write_text("raise SystemExit(0)\n")
-    result = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass"))
+    result = run_case(
+        manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass")
+    )
     encoded = json.dumps(result)
-    assert result["test"]["oracle_sha256"] == hashlib.sha256(oracle.read_bytes()).hexdigest()
+    assert (
+        result["test"]["oracle_sha256"]
+        == hashlib.sha256(oracle.read_bytes()).hexdigest()
+    )
     assert result["test"]["oracle_bytes"] == oracle.stat().st_size
     assert str(tmp_path) not in encoded
     assert "raise SystemExit" not in encoded
     assert "oracle.py" not in encoded
 
 
-@pytest.mark.parametrize("oracle_setup, message", [
-    ("escape", "relative"),
-    ("missing", "not found"),
-    ("directory", "regular file"),
-    ("symlink", "symlink"),
-    ("symlink_parent", "symlink"),
-    ("oversized", "bounded bytes"),
-])
-def test_external_oracle_paths_are_rejected_before_agent(tmp_path, oracle_setup, message):
+@pytest.mark.parametrize(
+    "oracle_setup, message",
+    [
+        ("escape", "relative"),
+        ("missing", "not found"),
+        ("directory", "regular file"),
+        ("symlink", "symlink"),
+        ("symlink_parent", "symlink"),
+        ("oversized", "bounded bytes"),
+    ],
+)
+def test_external_oracle_paths_are_rejected_before_agent(
+    tmp_path, oracle_setup, message
+):
     manifest, fixture_root = _manifest(tmp_path, oracle_file="oracle.py")
     outside = tmp_path / "outside.py"
     outside.write_text("raise SystemExit(0)\n")
@@ -379,7 +437,9 @@ def test_external_oracle_paths_are_rejected_before_agent(tmp_path, oracle_setup,
     elif oracle_setup == "oversized":
         oracle.write_bytes(b"x" * (benchmark.MAX_ORACLE_BYTES + 1))
     marker = tmp_path / "agent-ran"
-    agent = _command(f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')")
+    agent = _command(
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')"
+    )
     with pytest.raises(BenchmarkError, match=message):
         run_case(manifest["cases"][0], "control", fixture_root, tmp_path, agent)
     assert not marker.exists()
@@ -388,10 +448,16 @@ def test_external_oracle_paths_are_rejected_before_agent(tmp_path, oracle_setup,
 def test_legacy_test_command_receipt_and_behavior_are_unchanged(tmp_path):
     manifest, fixture_root = _manifest(
         tmp_path,
-        test_command=_command("from pathlib import Path; raise SystemExit(0 if Path('original.txt').exists() else 1)"),
+        test_command=_command(
+            "from pathlib import Path; raise SystemExit(0 if Path('original.txt').exists() else 1)"
+        ),
     )
-    result = run_case(manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass"))
-    assert result["test"]["command"] == [benchmark._safe_text(item) for item in manifest["cases"][0]["test_command"]]
+    result = run_case(
+        manifest["cases"][0], "control", fixture_root, tmp_path, _command("pass")
+    )
+    assert result["test"]["command"] == [
+        benchmark._safe_text(item) for item in manifest["cases"][0]["test_command"]
+    ]
     assert result["test"]["command_status"] == "passed"
     assert "oracle_sha256" not in result["test"]
     assert "oracle_bytes" not in result["test"]

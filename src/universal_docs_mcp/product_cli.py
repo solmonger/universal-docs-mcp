@@ -37,15 +37,21 @@ _DOCTOR_MAX_FILE_BYTES = 64 * 1024
 
 def _receipt_text(value: Any, *, limit: int = 256) -> str:
     text = value if isinstance(value, str) else str(value)
-    text = "".join(char if char in "\t\n\r" or ord(char) >= 32 else "?" for char in text)
+    text = "".join(
+        char if char in "\t\n\r" or ord(char) >= 32 else "?" for char in text
+    )
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _doctor_check(
     check_id: str, status: str, reason: str, **metadata: Any
 ) -> dict[str, Any]:
-    return {"id": _receipt_text(check_id), "status": _receipt_text(status),
-            "reason": _receipt_text(reason), "metadata": metadata}
+    return {
+        "id": _receipt_text(check_id),
+        "status": _receipt_text(status),
+        "reason": _receipt_text(reason),
+        "metadata": metadata,
+    }
 
 
 def _doctor_read_json(
@@ -64,7 +70,9 @@ def _doctor_read_json(
                 return None, None, reason + "_not_regular"
             raw = bytearray()
             while len(raw) <= _DOCTOR_MAX_FILE_BYTES:
-                chunk = os.read(fd, min(16 * 1024, _DOCTOR_MAX_FILE_BYTES + 1 - len(raw)))
+                chunk = os.read(
+                    fd, min(16 * 1024, _DOCTOR_MAX_FILE_BYTES + 1 - len(raw))
+                )
                 if not chunk:
                     break
                 raw.extend(chunk)
@@ -82,7 +90,14 @@ def _doctor_read_json(
         return value, bytes(raw), None
     except FileNotFoundError:
         return None, None, reason + "_missing"
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ):
         return None, None, reason + "_invalid"
 
 
@@ -90,11 +105,15 @@ def _doctor_installation() -> dict[str, Any]:
     """Prove that the ordinary install belongs to this interpreter and distribution."""
     names = (_HOOK_NAME, _PREFLIGHT_NAME)
     overrides = {
-        name: bool(os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper()))
+        name: bool(
+            os.environ.get("UNIVERSAL_DOCS_INIT_" + name.replace("-", "_").upper())
+        )
         for name in names
     }
     override = any(overrides.values())
-    raw_executable = Path(sys.executable) if isinstance(sys.executable, str) else Path("")
+    raw_executable = (
+        Path(sys.executable) if isinstance(sys.executable, str) else Path("")
+    )
     result: dict[str, Any] = {
         "status": "fail",
         "reason": "fixture_override" if override else "installed_identity_unavailable",
@@ -109,8 +128,12 @@ def _doctor_installation() -> dict[str, Any]:
 
     if override:
         result["scripts"] = {
-            name: {"status": "fail", "reason": "fixture_override", "owned": False,
-                   "provenance": "fixture"}
+            name: {
+                "status": "fail",
+                "reason": "fixture_override",
+                "owned": False,
+                "provenance": "fixture",
+            }
             for name in names
         }
         return result
@@ -147,13 +170,17 @@ def _doctor_installation() -> dict[str, Any]:
             _validate_executable(script)
         except ValueError as exc:
             result["scripts"][name] = {
-                "status": "fail", "reason": str(exc), "owned": False,
+                "status": "fail",
+                "reason": str(exc),
+                "owned": False,
                 "provenance": "installed",
             }
             result["reason"] = "console_script_invalid"
             return result
         result["scripts"][name] = {
-            "status": "pass", "reason": "ordinary_installation", "owned": True,
+            "status": "pass",
+            "reason": "ordinary_installation",
+            "owned": True,
             "provenance": "installed",
         }
 
@@ -273,7 +300,11 @@ def _doctor_probe(
                 limit_deadline = parent_exit_deadline or deadline
                 remaining = limit_deadline - now
                 if remaining <= 0:
-                    status = "probe_timeout" if parent_exit_deadline is None else "probe_descendant_timeout"
+                    status = (
+                        "probe_timeout"
+                        if parent_exit_deadline is None
+                        else "probe_descendant_timeout"
+                    )
                     break
                 for key, _ in selector.select(min(0.05, remaining)):
                     try:
@@ -328,7 +359,11 @@ def _doctor_probe(
         except UnicodeDecodeError:
             return {}, "probe_invalid_utf8"
         try:
-            payload = json.loads(text, object_pairs_hook=_pairs_no_duplicates, parse_constant=_reject_json_constant)
+            payload = json.loads(
+                text,
+                object_pairs_hook=_pairs_no_duplicates,
+                parse_constant=_reject_json_constant,
+            )
         except ValueError as exc:
             if str(exc) == "duplicate_json_key":
                 return {}, "probe_duplicate_json_keys"
@@ -337,7 +372,9 @@ def _doctor_probe(
             return {}, "probe_malformed_json"
         if not isinstance(payload, dict):
             return {}, "probe_result_not_object"
-        if payload.get("decision") == "block" and isinstance(payload.get("reason"), str):
+        if payload.get("decision") == "block" and isinstance(
+            payload.get("reason"), str
+        ):
             reason = payload["reason"]
             prefix = "Universal Docs preflight blocked this prompt: "
             suffix = ". No documentation context was injected."
@@ -355,17 +392,31 @@ def _doctor_probe(
         if set(payload) != {"hookSpecificOutput"}:
             return {}, "probe_result_extra_fields"
         output = payload.get("hookSpecificOutput")
-        if not isinstance(output, dict) or set(output) != {"hookEventName", "additionalContext"}:
+        if not isinstance(output, dict) or set(output) != {
+            "hookEventName",
+            "additionalContext",
+        }:
             return {}, "probe_result_invalid_fields"
         if output.get("hookEventName") != "UserPromptSubmit":
             return {}, "probe_result_invalid_fields"
         context = output.get("additionalContext")
         if not isinstance(context, str):
             return {}, "probe_result_missing_required_fields"
-        if context.count("--- BEGIN UNTRUSTED DOCUMENTATION DATA ---") != 1 or context.count("--- END UNTRUSTED DOCUMENTATION DATA ---") != 1:
+        if (
+            context.count("--- BEGIN UNTRUSTED DOCUMENTATION DATA ---") != 1
+            or context.count("--- END UNTRUSTED DOCUMENTATION DATA ---") != 1
+        ):
             return {}, "probe_source_contract_invalid"
         fields: dict[str, str] = {}
-        allowed = {"Target package", "Target version", "Source kind", "Source version binding", "Source SHA-256", "Freshness policy", "Freshness state"}
+        allowed = {
+            "Target package",
+            "Target version",
+            "Source kind",
+            "Source version binding",
+            "Source SHA-256",
+            "Freshness policy",
+            "Freshness state",
+        }
         for line in context.splitlines():
             if ": " in line:
                 key, value = line.split(": ", 1)
@@ -375,26 +426,50 @@ def _doctor_probe(
                     fields[key] = value
         if set(fields) != allowed:
             return {}, "probe_source_metadata_missing"
-        expected_package = json.dumps(request.get("package")) if request and request.get("package") else None
-        expected_version = json.dumps(request.get("requested_version") or request.get("version")) if request else None
-        if ((expected_package and fields.get("Target package") != expected_package) or (expected_version and fields.get("Target version") != expected_version)):
+        expected_package = (
+            json.dumps(request.get("package"))
+            if request and request.get("package")
+            else None
+        )
+        expected_version = (
+            json.dumps(request.get("requested_version") or request.get("version"))
+            if request
+            else None
+        )
+        if (expected_package and fields.get("Target package") != expected_package) or (
+            expected_version and fields.get("Target version") != expected_version
+        ):
             return {}, "probe_source_selection_mismatch"
         source_sha = fields["Source SHA-256"]
-        if len(source_sha) != 64 or any(c not in "0123456789abcdef" for c in source_sha):
+        if len(source_sha) != 64 or any(
+            c not in "0123456789abcdef" for c in source_sha
+        ):
             return {}, "probe_source_metadata_invalid"
         try:
             freshness_policy = json.loads(fields["Freshness policy"])
             freshness_state = json.loads(fields["Freshness state"])
         except (TypeError, json.JSONDecodeError):
             return {}, "probe_source_metadata_invalid"
-        if freshness_policy != (request or {}).get("freshness_mode") or freshness_state != "upstream_checked":
+        if (
+            freshness_policy != (request or {}).get("freshness_mode")
+            or freshness_state != "upstream_checked"
+        ):
             return {}, "probe_source_freshness_invalid"
 
         def packet_value(key: str) -> str:
             value = json.loads(fields[key])
             allowed_values = {
-                "Source kind": {"pypi_description", "npm_readme", "github_readme", "official_markdown"},
-                "Source version binding": {"registry_version", "unverified_git_ref", "versioned_url"},
+                "Source kind": {
+                    "pypi_description",
+                    "npm_readme",
+                    "github_readme",
+                    "official_markdown",
+                },
+                "Source version binding": {
+                    "registry_version",
+                    "unverified_git_ref",
+                    "versioned_url",
+                },
             }
             if not isinstance(value, str) or value not in allowed_values[key]:
                 raise ValueError("probe_source_metadata_invalid")
@@ -404,7 +479,9 @@ def _doctor_probe(
             "returncode": 0,
             "probe_mode": "installed_hook",
             "package": request.get("package") if request else None,
-            "version": (request.get("requested_version") or request.get("version")) if request else None,
+            "version": (request.get("requested_version") or request.get("version"))
+            if request
+            else None,
             "section_ids": list(request.get("section_ids", [])) if request else [],
             "source_kind": packet_value("Source kind"),
             "source_version_binding": packet_value("Source version binding"),
@@ -452,11 +529,22 @@ _INIT_ERROR_REASONS = {
 # Public rollback reasons are deliberately finite.  Exception text is never a
 # receipt field: it can contain paths, secrets, terminal controls, or megabytes.
 _ROLLBACK_ERROR_REASONS = {
-    "project_root_invalid", "output_parent_invalid", "recovery_required",
-    "install_state_invalid", "install_state_missing", "rollback_tombstone_invalid",
-    "rollback_adapter_invalid", "rollback_settings_invalid", "rollback_live_mismatch",
-    "rollback_hook_ambiguous_or_missing", "rollback_backup_invalid", "rollback_state_invalid",
-    "rollback_failed", "recovery_failed", "response_too_large", "arguments_too_large",
+    "project_root_invalid",
+    "output_parent_invalid",
+    "recovery_required",
+    "install_state_invalid",
+    "install_state_missing",
+    "rollback_tombstone_invalid",
+    "rollback_adapter_invalid",
+    "rollback_settings_invalid",
+    "rollback_live_mismatch",
+    "rollback_hook_ambiguous_or_missing",
+    "rollback_backup_invalid",
+    "rollback_state_invalid",
+    "rollback_failed",
+    "recovery_failed",
+    "response_too_large",
+    "arguments_too_large",
     "arguments_invalid",
 }
 
@@ -476,7 +564,14 @@ class _Parser(argparse.ArgumentParser):
 
 
 _DUPLICATE_GUARDED_OPTIONS: dict[str, set[str]] = {
-    "init": {"--project-root", "--before", "--after", "--harness", "--apply", "--package"},
+    "init": {
+        "--project-root",
+        "--before",
+        "--after",
+        "--harness",
+        "--apply",
+        "--package",
+    },
     "doctor": {"--project-root"},
     "rollback": {"--project-root", "--apply"},
     "plan": {"--project-root", "--before", "--after", "--package", "--task"},
@@ -1117,19 +1212,30 @@ _DOCTOR_CACHE_UNSAFE_REASON = "cache_owned_entry_unsafe"
 _DOCTOR_CACHE_ENTRY_ERROR_REASON = "cache_owned_entry_unreadable"
 
 
-def _doctor_cache_metadata(scope: str, *, root_status: str, identity: str | None,
-                           available: bool, entries: dict[str, Any] | None = None,
-                           reason: str = "cache_owner_classified") -> dict[str, Any]:
+def _doctor_cache_metadata(
+    scope: str,
+    *,
+    root_status: str,
+    identity: str | None,
+    available: bool,
+    entries: dict[str, Any] | None = None,
+    reason: str = "cache_owner_classified",
+) -> dict[str, Any]:
     return {
         "scope": scope,
         "owner": "DocsCache",
-        "provenance": "production_default" if scope == "default_user_installation" else "fixture_override",
-        "path_semantics": "~/.cache/universal-docs-mcp" if scope == "default_user_installation" else "explicit fixture path (not production ownership)",
+        "provenance": "production_default"
+        if scope == "default_user_installation"
+        else "fixture_override",
+        "path_semantics": "~/.cache/universal-docs-mcp"
+        if scope == "default_user_installation"
+        else "explicit fixture path (not production ownership)",
         "identity": identity,
         "available": available,
         "root_status": root_status,
         "reason": reason,
-        "entries": entries or {
+        "entries": entries
+        or {
             "validity": "topology_only",
             "total": 0,
             "regular": 0,
@@ -1204,8 +1310,13 @@ def _doctor_cache(root: Path) -> tuple[dict[str, Any], str]:
         scope = "explicit"
         identity_seed = f"DocsCache:fixture:{cache}"
         if not cache.is_absolute():
-            return _doctor_cache_metadata(scope, root_status="invalid", identity=None,
-                                          available=False, reason="explicit_path_not_absolute"), "fail"
+            return _doctor_cache_metadata(
+                scope,
+                root_status="invalid",
+                identity=None,
+                available=False,
+                reason="explicit_path_not_absolute",
+            ), "fail"
     else:
         cache = DEFAULT_CACHE_DIR
         scope = "default_user_installation"
@@ -1214,33 +1325,73 @@ def _doctor_cache(root: Path) -> tuple[dict[str, Any], str]:
     try:
         info = cache.lstat()
     except FileNotFoundError:
-        return _doctor_cache_metadata(scope, root_status="missing", identity=identity,
-                                      available=False, reason="cache_missing_first_run"), "pass"
+        return _doctor_cache_metadata(
+            scope,
+            root_status="missing",
+            identity=identity,
+            available=False,
+            reason="cache_missing_first_run",
+        ), "pass"
     except OSError:
-        return _doctor_cache_metadata(scope, root_status="inaccessible", identity=identity,
-                                      available=False, reason="cache_root_inaccessible"), "unknown"
+        return _doctor_cache_metadata(
+            scope,
+            root_status="inaccessible",
+            identity=identity,
+            available=False,
+            reason="cache_root_inaccessible",
+        ), "unknown"
     if stat.S_ISLNK(info.st_mode):
-        return _doctor_cache_metadata(scope, root_status="symlink", identity=identity,
-                                      available=False, reason="cache_root_symlink"), "fail"
+        return _doctor_cache_metadata(
+            scope,
+            root_status="symlink",
+            identity=identity,
+            available=False,
+            reason="cache_root_symlink",
+        ), "fail"
     if not stat.S_ISDIR(info.st_mode):
         kind = "file" if stat.S_ISREG(info.st_mode) else "special"
-        return _doctor_cache_metadata(scope, root_status=kind, identity=identity,
-                                      available=False, reason=f"cache_root_{kind}"), "fail"
+        return _doctor_cache_metadata(
+            scope,
+            root_status=kind,
+            identity=identity,
+            available=False,
+            reason=f"cache_root_{kind}",
+        ), "fail"
     entries, entry_status = _doctor_cache_entries(cache)
     if entry_status == "unsafe_owned":
-        return _doctor_cache_metadata(scope, root_status="directory", identity=identity,
-                                      available=False, entries=entries,
-                                      reason=_DOCTOR_CACHE_UNSAFE_REASON), "fail"
+        return _doctor_cache_metadata(
+            scope,
+            root_status="directory",
+            identity=identity,
+            available=False,
+            entries=entries,
+            reason=_DOCTOR_CACHE_UNSAFE_REASON,
+        ), "fail"
     if entry_status == "unreadable_owned":
-        return _doctor_cache_metadata(scope, root_status="directory", identity=identity,
-                                      available=False, entries=entries,
-                                      reason=_DOCTOR_CACHE_ENTRY_ERROR_REASON), "unknown"
+        return _doctor_cache_metadata(
+            scope,
+            root_status="directory",
+            identity=identity,
+            available=False,
+            entries=entries,
+            reason=_DOCTOR_CACHE_ENTRY_ERROR_REASON,
+        ), "unknown"
     if entry_status != "ok":
-        return _doctor_cache_metadata(scope, root_status="inaccessible", identity=identity,
-                                      available=False, entries=entries,
-                                      reason="cache_entries_inaccessible"), "unknown"
-    return _doctor_cache_metadata(scope, root_status="directory", identity=identity,
-                                  available=True, entries=entries), "pass"
+        return _doctor_cache_metadata(
+            scope,
+            root_status="inaccessible",
+            identity=identity,
+            available=False,
+            entries=entries,
+            reason="cache_entries_inaccessible",
+        ), "unknown"
+    return _doctor_cache_metadata(
+        scope,
+        root_status="directory",
+        identity=identity,
+        available=True,
+        entries=entries,
+    ), "pass"
 
 
 def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
@@ -1290,7 +1441,12 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
         )
     except ValueError as exc:
         state, state_raw, state_status, state_reason = (
-            None, None, "fail", _known_reason(exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid")
+            None,
+            None,
+            "fail",
+            _known_reason(
+                exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid"
+            ),
         )
     try:
         marker, _ = _read_recovery_marker(root)
@@ -1298,7 +1454,12 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
             state_status, state_reason = "fail", _RECOVERY_REQUIRED_REASON
     except ValueError as exc:
         marker, _, state_status, state_reason = (
-            None, None, "fail", _known_reason(exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid")
+            None,
+            None,
+            "fail",
+            _known_reason(
+                exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid"
+            ),
         )
     try:
         tombstone, _ = _read_tombstone(root)
@@ -1310,22 +1471,26 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
                 missing=None,
                 reason="rollback_tombstone_invalid",
             )
-            if (
-                (tombstone["preimage_sha256"] is None and current is not None)
-                or (
-                    tombstone["preimage_sha256"] is not None
-                    and (current is None or _sha256(current) != tombstone["adapter_sha256"])
-                )
+            if (tombstone["preimage_sha256"] is None and current is not None) or (
+                tombstone["preimage_sha256"] is not None
+                and (current is None or _sha256(current) != tombstone["adapter_sha256"])
             ):
                 state_status, state_reason = "fail", "rollback_tombstone_invalid"
             tombstone_settings, _, tombstone_settings_error = _doctor_read_json(
                 root / ".claude/settings.json", "settings"
             )
-            if tombstone_settings_error or tombstone_settings is None or _settings_has_universal_hook(tombstone_settings):
+            if (
+                tombstone_settings_error
+                or tombstone_settings is None
+                or _settings_has_universal_hook(tombstone_settings)
+            ):
                 state_status, state_reason = "fail", "rollback_tombstone_invalid"
     except ValueError as exc:
-        state_status, state_reason = "fail", _known_reason(
-            exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid"
+        state_status, state_reason = (
+            "fail",
+            _known_reason(
+                exc, _INIT_ERROR_REASONS | _ROLLBACK_ERROR_REASONS, "doctor_invalid"
+            ),
         )
     if marker is not None:
         state_status, state_reason = "fail", _RECOVERY_REQUIRED_REASON
@@ -1476,7 +1641,13 @@ def _doctor_receipt(root: Path) -> tuple[dict[str, Any], int]:
         )
     )
     status = "pass" if all(c["status"] == "pass" for c in checks) else "fail"
-    command = ["universal-docs", "rollback", "--project-root", "<project-root>", "--apply"]
+    command = [
+        "universal-docs",
+        "rollback",
+        "--project-root",
+        "<project-root>",
+        "--apply",
+    ]
     receipt = {
         "schema": _DOCTOR_SCHEMA,
         "status": status,
@@ -1695,7 +1866,9 @@ def _init_receipt(args: argparse.Namespace, root: Path) -> tuple[dict[str, Any],
                 state_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        raise ValueError("recovery_failed" if recovery_failed else "write_failed") from None
+        raise ValueError(
+            "recovery_failed" if recovery_failed else "write_failed"
+        ) from None
     return receipt, 0
 
 
@@ -1721,7 +1894,11 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
             settings, _, settings_error = _doctor_read_json(
                 root / ".claude/settings.json", "settings"
             )
-            if settings_error or settings is None or _settings_has_universal_hook(settings):
+            if (
+                settings_error
+                or settings is None
+                or _settings_has_universal_hook(settings)
+            ):
                 raise ValueError("rollback_tombstone_invalid")
             return {
                 "schema": _ROLLBACK_SCHEMA,
@@ -1938,7 +2115,9 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
                 marker_path.unlink(missing_ok=True)
             except (OSError, RuntimeError, ValueError):
                 recovery_failed = True
-        raise ValueError("recovery_failed" if recovery_failed else "rollback_failed") from None
+        raise ValueError(
+            "recovery_failed" if recovery_failed else "rollback_failed"
+        ) from None
 
     # Cleanup is the final transaction step. Failure is not success: the marker
     # remains and all public entry points continue to refuse the project.
@@ -1950,9 +2129,12 @@ def _rollback_receipt(root: Path, apply: bool) -> tuple[dict[str, Any], int]:
 
 
 def _receipt_bytes(payload: dict[str, Any]) -> bytes:
-    return json.dumps(
-        payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False
-    ).encode("ascii") + b"\n"
+    return (
+        json.dumps(
+            payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False
+        ).encode("ascii")
+        + b"\n"
+    )
 
 
 def _bounded_doctor_receipt(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1961,8 +2143,12 @@ def _bounded_doctor_receipt(payload: dict[str, Any]) -> dict[str, Any]:
         return payload
     compact = deepcopy(payload)
     compact["checks"] = [
-        {"id": item.get("id"), "status": item.get("status"),
-         "reason": item.get("reason"), "metadata": {}}
+        {
+            "id": item.get("id"),
+            "status": item.get("status"),
+            "reason": item.get("reason"),
+            "metadata": {},
+        }
         for item in payload.get("checks", [])
         if isinstance(item, dict)
     ]
@@ -2028,8 +2214,12 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
             before = _safe_relative(args.before, root)
             after = _safe_relative(args.after, root)
             payload = plan_dependency_changes(
-                before, after, project_root=root, package=args.package,
-                task=args.task, source_paths=args.source,
+                before,
+                after,
+                project_root=root,
+                package=args.package,
+                task=args.task,
+                source_paths=args.source,
             ).as_dict()
         elif args.command == "init":
             root = _validate_root(args.project_root, absolute_required=True)
@@ -2062,7 +2252,12 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
                 {
                     "schema": _DOCTOR_SCHEMA,
                     "status": "fail",
-                    "reason": _known_reason(exc, _INIT_ERROR_REASONS | {"project_root_invalid", "command_required"}, "doctor_invalid"),
+                    "reason": _known_reason(
+                        exc,
+                        _INIT_ERROR_REASONS
+                        | {"project_root_invalid", "command_required"},
+                        "doctor_invalid",
+                    ),
                 },
                 output,
                 schema=_DOCTOR_SCHEMA,
@@ -2073,7 +2268,11 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
                 {
                     "schema": _ROLLBACK_SCHEMA,
                     "status": "fail",
-                    "reason": _known_reason(exc, _ROLLBACK_ERROR_REASONS | {"command_required"}, "rollback_invalid"),
+                    "reason": _known_reason(
+                        exc,
+                        _ROLLBACK_ERROR_REASONS | {"command_required"},
+                        "rollback_invalid",
+                    ),
                 },
                 output,
                 schema=_ROLLBACK_SCHEMA,
@@ -2082,7 +2281,9 @@ def main(argv: list[str] | None = None, *, stdout: BinaryIO | None = None) -> in
         if command == "init":
             reason = str(exc)
             if reason not in _INIT_ERROR_REASONS:
-                reason = "write_failed" if getattr(args, "apply", False) else "init_invalid"
+                reason = (
+                    "write_failed" if getattr(args, "apply", False) else "init_invalid"
+                )
             mode = "apply" if getattr(args, "apply", False) else "dry-run"
             _emit(
                 {

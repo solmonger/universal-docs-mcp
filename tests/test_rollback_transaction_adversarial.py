@@ -17,7 +17,12 @@ def call(root: Path, *args: str) -> tuple[int, dict]:
     return rc, json.loads(out.getvalue())
 
 
-def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter: bytes | None = None, settings: dict | None = None) -> Path:
+def project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    adapter: bytes | None = None,
+    settings: dict | None = None,
+) -> Path:
     root = tmp_path / "project"
     (root / "before").mkdir(parents=True)
     (root / "after").mkdir()
@@ -35,7 +40,9 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter: bytes | No
         (root / ".universal-docs/adapter.json").write_bytes(adapter)
     if settings is not None:
         (root / ".claude").mkdir()
-        (root / ".claude/settings.json").write_bytes(json.dumps(settings).encode() + b"\n")
+        (root / ".claude/settings.json").write_bytes(
+            json.dumps(settings).encode() + b"\n"
+        )
     return root
 
 
@@ -54,7 +61,9 @@ def init_apply(root: Path) -> None:
     assert rc == 0, receipt
 
 
-def snapshot(root: Path) -> dict[str, tuple[bool, bytes | None, int | None, int | None]]:
+def snapshot(
+    root: Path,
+) -> dict[str, tuple[bool, bytes | None, int | None, int | None]]:
     result = {}
     for relative in (
         ".universal-docs/adapter.json",
@@ -78,7 +87,12 @@ def snapshot(root: Path) -> dict[str, tuple[bool, bytes | None, int | None, int 
     backups = root / ".universal-docs/backups"
     if backups.exists():
         result["backups"] = tuple(
-            (p.relative_to(root).as_posix(), p.read_bytes(), p.lstat().st_mode, p.lstat().st_mtime_ns)
+            (
+                p.relative_to(root).as_posix(),
+                p.read_bytes(),
+                p.lstat().st_mode,
+                p.lstat().st_mtime_ns,
+            )
             for p in sorted(backups.iterdir())
         )
     else:
@@ -115,7 +129,12 @@ def test_success_restores_all_preimage_topologies_and_preserves_unrelated(
     tmp_path, monkeypatch, adapter_preimage, settings_preimage
 ):
     settings_seed = {"unrelated_before": True} if settings_preimage else None
-    root = project(tmp_path, monkeypatch, b'{"old":1}\n' if adapter_preimage else None, settings_seed)
+    root = project(
+        tmp_path,
+        monkeypatch,
+        b'{"old":1}\n' if adapter_preimage else None,
+        settings_seed,
+    )
     init_apply(root)
     settings = root / ".claude/settings.json"
     value = json.loads(settings.read_text())
@@ -134,8 +153,19 @@ def test_success_restores_all_preimage_topologies_and_preserves_unrelated(
     assert call(root, "rollback", "--apply")[1]["changed"] is False
 
 
-@pytest.mark.parametrize("boundary", ["settings_backup", "settings_write", "adapter_restore", "state_remove", "tombstone_write"])
-def test_each_forward_mutation_boundary_is_failure_atomic(tmp_path, monkeypatch, boundary):
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "settings_backup",
+        "settings_write",
+        "adapter_restore",
+        "state_remove",
+        "tombstone_write",
+    ],
+)
+def test_each_forward_mutation_boundary_is_failure_atomic(
+    tmp_path, monkeypatch, boundary
+):
     root = project(tmp_path, monkeypatch, b'{"old":1}\n', {"unrelated_before": True})
     init_apply(root)
     before = snapshot(root)
@@ -154,7 +184,10 @@ def test_each_forward_mutation_boundary_is_failure_atomic(tmp_path, monkeypatch,
     def fail_write(path, raw):
         if boundary == "settings_write" and path == root / ".claude/settings.json":
             raise OSError("injected settings write")
-        if boundary == "tombstone_write" and path == root / ".universal-docs/rollback-tombstone.json":
+        if (
+            boundary == "tombstone_write"
+            and path == root / ".universal-docs/rollback-tombstone.json"
+        ):
             raise OSError("injected tombstone write")
         return original_write(path, raw)
 
@@ -163,12 +196,19 @@ def test_each_forward_mutation_boundary_is_failure_atomic(tmp_path, monkeypatch,
     def fail_restore(path, raw, mode, mtime_ns):
         nonlocal restore_calls
         restore_calls += 1
-        if boundary == "adapter_restore" and path == root / ".universal-docs/adapter.json" and restore_calls == 1:
+        if (
+            boundary == "adapter_restore"
+            and path == root / ".universal-docs/adapter.json"
+            and restore_calls == 1
+        ):
             raise OSError("injected adapter restore")
         return original_restore(path, raw, mode, mtime_ns)
 
     def fail_unlink(path, *args, **kwargs):
-        if boundary == "state_remove" and path == root / ".universal-docs/install-state.json":
+        if (
+            boundary == "state_remove"
+            and path == root / ".universal-docs/install-state.json"
+        ):
             raise OSError("injected state removal")
         return original_unlink(path, *args, **kwargs)
 
@@ -181,7 +221,9 @@ def test_each_forward_mutation_boundary_is_failure_atomic(tmp_path, monkeypatch,
     assert snapshot(root) == before
 
 
-@pytest.mark.parametrize("compensation_target", ["settings", "adapter", "state", "tombstone"])
+@pytest.mark.parametrize(
+    "compensation_target", ["settings", "adapter", "state", "tombstone"]
+)
 def test_each_compensation_restore_is_attempted_and_fails_closed(
     tmp_path, monkeypatch, compensation_target
 ):
@@ -209,7 +251,10 @@ def test_each_compensation_restore_is_attempted_and_fails_closed(
     def fail_recovery(path, raw, mode, mtime_ns):
         nonlocal restore_calls
         restore_calls += 1
-        if path == target_paths[compensation_target] and restore_calls == compensation_calls[compensation_target]:
+        if (
+            path == target_paths[compensation_target]
+            and restore_calls == compensation_calls[compensation_target]
+        ):
             raise RuntimeError("injected compensation failure")
         return original_restore(path, raw, mode, mtime_ns)
 
@@ -229,16 +274,24 @@ def test_each_compensation_restore_is_attempted_and_fails_closed(
         "settings_backup_sha256",
         "preimage_sha256",
     }
-    assert all(not Path(value).is_absolute() for value in marker.values() if isinstance(value, str))
+    assert all(
+        not Path(value).is_absolute()
+        for value in marker.values()
+        if isinstance(value, str)
+    )
     state_path = root / ".universal-docs/install-state.json"
     if compensation_target == "state":
         assert not state_path.exists()
     else:
-        assert state_path.read_bytes() == before[".universal-docs/install-state.json"][1]
+        assert (
+            state_path.read_bytes() == before[".universal-docs/install-state.json"][1]
+        )
     assert "injected" not in json.dumps(receipt)
 
 
-def test_malformed_preexisting_tombstone_is_rejected_before_writes(tmp_path, monkeypatch):
+def test_malformed_preexisting_tombstone_is_rejected_before_writes(
+    tmp_path, monkeypatch
+):
     root = project(tmp_path, monkeypatch, b'{"old":1}\n')
     init_apply(root)
     tombstone = root / ".universal-docs/rollback-tombstone.json"
@@ -279,22 +332,38 @@ def test_compensation_failure_fails_closed_and_next_call_refuses(tmp_path, monke
     assert not state.exists() and marker.exists()
     marker_raw = marker.read_bytes()
     marker_value = json.loads(marker_raw)
-    assert marker_value["state_sha256"] == product_cli._sha256(before[".universal-docs/install-state.json"][1])
+    assert marker_value["state_sha256"] == product_cli._sha256(
+        before[".universal-docs/install-state.json"][1]
+    )
     assert snapshot(root)["backups"] == before["backups"]
     monkeypatch.undo()
-    rc, receipt = call(root, "init", "--harness", "claude-code", "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply")
+    rc, receipt = call(
+        root,
+        "init",
+        "--harness",
+        "claude-code",
+        "--before",
+        "before/requirements.txt",
+        "--after",
+        "after/requirements.txt",
+        "--apply",
+    )
     assert rc == 1 and receipt["reason"] == "recovery_required"
     assert snapshot(root)["backups"] == before["backups"]
     rc, receipt = call(root, "doctor")
     assert rc == 1
-    state_check = next(check for check in receipt["checks"] if check["id"] == "install_state")
+    state_check = next(
+        check for check in receipt["checks"] if check["id"] == "install_state"
+    )
     assert state_check["reason"] == "recovery_required"
     rc, receipt = call(root, "rollback", "--apply")
     assert rc == 1 and receipt["reason"] == "recovery_required"
     assert marker.read_bytes() == marker_raw and not state.exists()
 
 
-def test_generated_adapter_removal_failure_restores_pre_call_topology(tmp_path, monkeypatch):
+def test_generated_adapter_removal_failure_restores_pre_call_topology(
+    tmp_path, monkeypatch
+):
     root = project(tmp_path, monkeypatch)
     init_apply(root)
     before = snapshot(root)
@@ -328,7 +397,9 @@ def test_initial_marker_write_failure_is_zero_mutation(tmp_path, monkeypatch):
     assert snapshot(root) == before
 
 
-def test_marker_remove_failure_is_recovery_failed_and_quarantines(tmp_path, monkeypatch):
+def test_marker_remove_failure_is_recovery_failed_and_quarantines(
+    tmp_path, monkeypatch
+):
     root = project(tmp_path, monkeypatch, b'{"old":1}\n')
     init_apply(root)
     original_unlink = Path.unlink
@@ -345,7 +416,16 @@ def test_marker_remove_failure_is_recovery_failed_and_quarantines(tmp_path, monk
     assert not (root / ".universal-docs/install-state.json").exists()
     monkeypatch.undo()
     for command in (
-        ["init", "--harness", "claude-code", "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply"],
+        [
+            "init",
+            "--harness",
+            "claude-code",
+            "--before",
+            "before/requirements.txt",
+            "--after",
+            "after/requirements.txt",
+            "--apply",
+        ],
         ["doctor"],
         ["rollback", "--apply"],
     ):
@@ -376,8 +456,15 @@ def test_new_settings_backup_survives_cleanup_failure_hash_bound(tmp_path, monke
     monkeypatch.setattr(product_cli, "_atomic_write", fail_tombstone)
     rc, receipt = call(root, "rollback", "--apply")
     assert rc == 1 and receipt["reason"] == "recovery_failed"
-    assert snapshot(root)[".universal-docs/install-state.json"] == before[".universal-docs/install-state.json"]
-    settings_backups = [entry for entry in snapshot(root)["backups"] if entry[0].startswith(".universal-docs/backups/settings-")]
+    assert (
+        snapshot(root)[".universal-docs/install-state.json"]
+        == before[".universal-docs/install-state.json"]
+    )
+    settings_backups = [
+        entry
+        for entry in snapshot(root)["backups"]
+        if entry[0].startswith(".universal-docs/backups/settings-")
+    ]
     assert len(settings_backups) == 1
     relative, raw, _mode, _mtime = settings_backups[0]
     assert relative.endswith(product_cli._sha256(raw) + ".json")

@@ -1,4 +1,5 @@
 """Focused checks for the blind Slice 02 corpus contract."""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +17,13 @@ RECEIPT = CORPUS / "corpus_receipt.json"
 
 
 def run_checker() -> tuple[str, dict]:
-    result = subprocess.run([sys.executable, str(CHECKER)], cwd=ROOT, capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [sys.executable, str(CHECKER)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     return result.stdout, json.loads(RECEIPT.read_text(encoding="utf-8"))
 
 
@@ -27,8 +34,13 @@ def test_external_oracles_are_blind_and_report_declared_classes():
     assert receipt["class_counts"]["wrong_version_api"] >= 10
     assert receipt["class_counts"]["general_coding_error"] >= 1
     assert all(case["evidence_type"] == "synthetic_stub" for case in receipt["cases"])
-    assert all(case["initial_failure"]["setup_failure"] is False for case in receipt["cases"])
-    assert all(f"{case['id']}: {case['initial_failure']['failure_class']}" in output for case in receipt["cases"])
+    assert all(
+        case["initial_failure"]["setup_failure"] is False for case in receipt["cases"]
+    )
+    assert all(
+        f"{case['id']}: {case['initial_failure']['failure_class']}" in output
+        for case in receipt["cases"]
+    )
 
 
 def test_visible_fixtures_have_no_oracle_or_api_stub_files_or_tokens():
@@ -47,20 +59,24 @@ def test_visible_fixtures_have_no_oracle_or_api_stub_files_or_tokens():
                 if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
             ),
         ]
-        variants = checker.expected_api_variants(checker.expected_api_token(oracle, case["id"]))
+        variants = checker.expected_api_variants(
+            checker.expected_api_token(oracle, case["id"])
+        )
         assert all(variant not in data for variant in variants for data in visible)
 
 
 def test_source_shaped_references_pass_each_external_oracle():
     references = {
-        "pydantic-v1-to-v2-model-dump": '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada").model_dump()\nif __name__ == "__main__":\n    main()\n''',
-        "pydantic-v1-to-v2-validator": '''from pydantic import BaseModel, ValidationInfo, field_validator\nclass User(BaseModel):\n    name: str\n    @field_validator("name")\n    def normalize_name(cls, value, info: ValidationInfo):\n        assert info.config is not None\n        return value.strip()\ndef main():\n    return User(name=" Ada ").name\nif __name__ == "__main__":\n    main()\n''',
-        "sqlalchemy-14-to-2-execute": '''from sqlalchemy import create_engine, text\ndef main():\n    with create_engine("sqlite://").connect() as connection:\n        return connection.execute(text("select 1"))\nif __name__ == "__main__":\n    main()\n''',
-        "sqlalchemy-14-to-2-select": '''from sqlalchemy import column, select, table\nfoo = table("foo", column("id"))\ndef main():\n    return select(foo.c.id)\nif __name__ == "__main__":\n    main()\n''',
-        "rich-12-to-13-console": '''from rich.console import Console\ndef main():\n    Console().print("Hello", "World!")\nif __name__ == "__main__":\n    main()\n''',
+        "pydantic-v1-to-v2-model-dump": """from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada").model_dump()\nif __name__ == "__main__":\n    main()\n""",
+        "pydantic-v1-to-v2-validator": """from pydantic import BaseModel, ValidationInfo, field_validator\nclass User(BaseModel):\n    name: str\n    @field_validator("name")\n    def normalize_name(cls, value, info: ValidationInfo):\n        assert info.config is not None\n        return value.strip()\ndef main():\n    return User(name=" Ada ").name\nif __name__ == "__main__":\n    main()\n""",
+        "sqlalchemy-14-to-2-execute": """from sqlalchemy import create_engine, text\ndef main():\n    with create_engine("sqlite://").connect() as connection:\n        return connection.execute(text("select 1"))\nif __name__ == "__main__":\n    main()\n""",
+        "sqlalchemy-14-to-2-select": """from sqlalchemy import column, select, table\nfoo = table("foo", column("id"))\ndef main():\n    return select(foo.c.id)\nif __name__ == "__main__":\n    main()\n""",
+        "rich-12-to-13-console": """from rich.console import Console\ndef main():\n    Console().print("Hello", "World!")\nif __name__ == "__main__":\n    main()\n""",
     }
     for case_id, source in references.items():
-        manifest = json.loads((CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8"))
+        manifest = json.loads(
+            (CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8")
+        )
         oracle = ROOT / manifest["oracle_file"]
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -84,7 +100,9 @@ def test_corpus_digest_is_deterministic():
 
 
 def run_oracle(case_id: str, source: str) -> subprocess.CompletedProcess[str]:
-    manifest = json.loads((CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8")
+    )
     oracle = ROOT / manifest["oracle_file"]
     with tempfile.TemporaryDirectory() as temporary:
         workspace = Path(temporary)
@@ -100,9 +118,9 @@ def run_oracle(case_id: str, source: str) -> subprocess.CompletedProcess[str]:
 
 def test_model_dump_oracle_rejects_oracle_only_and_non_target_shapes():
     sources = [
-        '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada")\n''',
-        '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada").dict()\n''',
-        '''from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return {"name": "Ada"}\n''',
+        """from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada")\n""",
+        """from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return User(name="Ada").dict()\n""",
+        """from pydantic import BaseModel\nclass User(BaseModel):\n    name: str\ndef main():\n    return {"name": "Ada"}\n""",
     ]
     for source in sources:
         result = run_oracle("pydantic-v1-to-v2-model-dump", source)
@@ -111,13 +129,15 @@ def test_model_dump_oracle_rejects_oracle_only_and_non_target_shapes():
 
 
 def test_oracle_runs_app_main_once_without_replaying_side_effects():
-    source = '''from rich.console import Console\nfrom pathlib import Path\n\ndef main():\n    marker = Path("runs.txt")\n    marker.write_text(marker.read_text() + "x" if marker.exists() else "x")\n    Console().print("Hello", "World!")\n\n'''
+    source = """from rich.console import Console\nfrom pathlib import Path\n\ndef main():\n    marker = Path("runs.txt")\n    marker.write_text(marker.read_text() + "x" if marker.exists() else "x")\n    Console().print("Hello", "World!")\n\n"""
     result = run_oracle("rich-12-to-13-console", source)
     assert result.returncode == 0, (result.stdout, result.stderr)
 
 
 def test_real_target_version_api_mapping_is_exact():
-    checker = __import__("scripts.check_version_guard_cases", fromlist=["expected_api_token"])
+    checker = __import__(
+        "scripts.check_version_guard_cases", fromlist=["expected_api_token"]
+    )
     expected = {
         "attrs-21-to-23-slots": "define",
         "click-7-to-8-parameter": "option",
@@ -132,13 +152,19 @@ def test_real_target_version_api_mapping_is_exact():
         "urllib3-1-to-2-timeout": "Timeout",
     }
     for case_id, token in expected.items():
-        manifest = json.loads((CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8"))
-        assert checker.expected_api_token(ROOT / manifest["oracle_file"], case_id) == token
+        manifest = json.loads(
+            (CORPUS / "cases" / f"{case_id}.json").read_text(encoding="utf-8")
+        )
+        assert (
+            checker.expected_api_token(ROOT / manifest["oracle_file"], case_id) == token
+        )
         checker.validate_expected_api(token, case_id, "wrong_version_api")
 
 
 def test_version_sensitive_placeholder_tokens_are_rejected():
-    checker = __import__("scripts.check_version_guard_cases", fromlist=["validate_expected_api"])
+    checker = __import__(
+        "scripts.check_version_guard_cases", fromlist=["validate_expected_api"]
+    )
     for token in ("attr_new", "api_replacement"):
         with pytest.raises(SystemExit, match="placeholder"):
             checker.validate_expected_api(token, "synthetic-case", "wrong_version_api")
@@ -146,7 +172,9 @@ def test_version_sensitive_placeholder_tokens_are_rejected():
 
 def test_deliberately_leaked_expected_token_is_rejected(tmp_path, monkeypatch):
     checker = __import__("scripts.check_version_guard_cases", fromlist=["check_case"])
-    source = (CORPUS / "cases" / "attrs-21-to-23-slots.json").read_text(encoding="utf-8")
+    source = (CORPUS / "cases" / "attrs-21-to-23-slots.json").read_text(
+        encoding="utf-8"
+    )
     case = json.loads(source)
     oracle = ROOT / case["oracle_file"]
     token = checker.expected_api_token(oracle, case["id"])
@@ -159,8 +187,12 @@ def test_deliberately_leaked_expected_token_is_rejected(tmp_path, monkeypatch):
 
 def test_unsafe_external_oracle_path_symlink_and_oversize_rejected(tmp_path):
     checker = __import__("scripts.check_version_guard_cases", fromlist=["check_case"])
-    case = json.loads((CORPUS / "cases" / "attrs-21-to-23-slots.json").read_text(encoding="utf-8"))
-    case["oracle_file"] = "benchmarks/version_guard/oracles/../cases/attrs-21-to-23-slots.json"
+    case = json.loads(
+        (CORPUS / "cases" / "attrs-21-to-23-slots.json").read_text(encoding="utf-8")
+    )
+    case["oracle_file"] = (
+        "benchmarks/version_guard/oracles/../cases/attrs-21-to-23-slots.json"
+    )
     path = tmp_path / "unsafe.json"
     path.write_text(json.dumps(case), encoding="utf-8")
     with pytest.raises(SystemExit, match="parent traversal"):

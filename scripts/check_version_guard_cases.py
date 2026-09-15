@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate and receipt the blind, offline Version Guard fixture corpus."""
+
 from __future__ import annotations
 
 import ast
@@ -19,9 +20,18 @@ CASES = CORPUS / "cases"
 ORACLES = CORPUS / "oracles"
 RECEIPT = CORPUS / "corpus_receipt.json"
 REQUIRED = {
-    "id", "ecosystem", "package", "target_version", "task", "workspace_fixture",
-    "test_command", "context_profile", "expected_failure_class", "evidence_type",
-    "evidence_note", "oracle_file",
+    "id",
+    "ecosystem",
+    "package",
+    "target_version",
+    "task",
+    "workspace_fixture",
+    "test_command",
+    "context_profile",
+    "expected_failure_class",
+    "evidence_type",
+    "evidence_note",
+    "oracle_file",
 }
 FAILURE_CLASSES = {"wrong_version_api", "general_coding_error"}
 ID_RE = __import__("re").compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
@@ -66,8 +76,15 @@ def _kill_process_group(process: subprocess.Popen[Any]) -> None:
 
 def run_bounded(command: list[str], cwd: Path) -> tuple[int, str, str, bool, bool]:
     """Run an oracle with the existing bounded output/timeout contract."""
-    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        kwargs: dict[str, Any] = {"stdout": stdout_file, "stderr": stderr_file, "cwd": cwd}
+    with (
+        tempfile.TemporaryFile() as stdout_file,
+        tempfile.TemporaryFile() as stderr_file,
+    ):
+        kwargs: dict[str, Any] = {
+            "stdout": stdout_file,
+            "stderr": stderr_file,
+            "cwd": cwd,
+        }
         if os.name == "posix":
             kwargs["start_new_session"] = True
         process = subprocess.Popen(command, **kwargs)
@@ -82,8 +99,17 @@ def run_bounded(command: list[str], cwd: Path) -> tuple[int, str, str, bool, boo
         stderr_file.seek(0)
         stdout = stdout_file.read(MAX_ORACLE_OUTPUT_BYTES + 1)
         stderr = stderr_file.read(MAX_ORACLE_OUTPUT_BYTES + 1)
-        overflow = len(stdout) > MAX_ORACLE_OUTPUT_BYTES or len(stderr) > MAX_ORACLE_OUTPUT_BYTES
-        return process.returncode, stdout[:MAX_ORACLE_OUTPUT_BYTES].decode("utf-8", "replace"), stderr[:MAX_ORACLE_OUTPUT_BYTES].decode("utf-8", "replace"), overflow, timed_out
+        overflow = (
+            len(stdout) > MAX_ORACLE_OUTPUT_BYTES
+            or len(stderr) > MAX_ORACLE_OUTPUT_BYTES
+        )
+        return (
+            process.returncode,
+            stdout[:MAX_ORACLE_OUTPUT_BYTES].decode("utf-8", "replace"),
+            stderr[:MAX_ORACLE_OUTPUT_BYTES].decode("utf-8", "replace"),
+            overflow,
+            timed_out,
+        )
 
 
 def safe_path(raw: str, label: str, base: Path = ROOT) -> Path:
@@ -121,7 +147,10 @@ def expected_api_token(oracle: Path, case_id: str) -> str:
         node.value.value
         for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "EXPECTED_API" for target in node.targets)
+        and any(
+            isinstance(target, ast.Name) and target.id == "EXPECTED_API"
+            for target in node.targets
+        )
         and isinstance(node.value, ast.Constant)
         and isinstance(node.value.value, str)
     ]
@@ -144,7 +173,14 @@ def expected_api_variants(expected: str) -> set[bytes]:
     separated = "-".join(words)
     return {
         value.encode("utf-8")
-        for value in {expected, expected.lower(), expected.upper(), joined, joined.lower(), separated}
+        for value in {
+            expected,
+            expected.lower(),
+            expected.upper(),
+            joined,
+            joined.lower(),
+            separated,
+        }
     }
 
 
@@ -166,7 +202,9 @@ def fixture_files(fixture: Path, case_id: str) -> list[Path]:
     return files
 
 
-def check_case(manifest_path: Path) -> tuple[dict[str, Any], list[Path], Path, str, dict[str, Any]]:
+def check_case(
+    manifest_path: Path,
+) -> tuple[dict[str, Any], list[Path], Path, str, dict[str, Any]]:
     if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
         fail(f"{manifest_path.name}: manifest exceeds size cap")
     try:
@@ -178,14 +216,31 @@ def check_case(manifest_path: Path) -> tuple[dict[str, Any], list[Path], Path, s
     case_id = case["id"]
     if not isinstance(case_id, str) or not ID_RE.fullmatch(case_id):
         fail(f"{manifest_path.name}: invalid id")
-    if case["ecosystem"] != "python" or case["expected_failure_class"] not in FAILURE_CLASSES:
+    if (
+        case["ecosystem"] != "python"
+        or case["expected_failure_class"] not in FAILURE_CLASSES
+    ):
         fail(f"{case_id}: invalid ecosystem or failure class")
-    if case["evidence_type"] != "synthetic_stub" or not case["evidence_note"].startswith("Synthetic local API stub"):
-        fail(f"{case_id}: only explicitly labelled synthetic_stub fixtures are permitted")
-    if not all(isinstance(case[key], str) and 0 < len(case[key].encode()) <= MAX_SCALAR_BYTES for key in REQUIRED - {"test_command"}):
+    if case["evidence_type"] != "synthetic_stub" or not case[
+        "evidence_note"
+    ].startswith("Synthetic local API stub"):
+        fail(
+            f"{case_id}: only explicitly labelled synthetic_stub fixtures are permitted"
+        )
+    if not all(
+        isinstance(case[key], str) and 0 < len(case[key].encode()) <= MAX_SCALAR_BYTES
+        for key in REQUIRED - {"test_command"}
+    ):
         fail(f"{case_id}: invalid or oversized scalar contract field")
     command = case["test_command"]
-    if not isinstance(command, list) or not 2 <= len(command) <= MAX_ARG_COUNT or not all(isinstance(arg, str) and 0 < len(arg.encode()) <= MAX_ARG_BYTES for arg in command):
+    if (
+        not isinstance(command, list)
+        or not 2 <= len(command) <= MAX_ARG_COUNT
+        or not all(
+            isinstance(arg, str) and 0 < len(arg.encode()) <= MAX_ARG_BYTES
+            for arg in command
+        )
+    ):
         fail(f"{case_id}: test_command must be a bounded argv list")
     if any(Path(arg).is_absolute() or ".." in Path(arg).parts for arg in command):
         fail(f"{case_id}: test_command contains unsafe path")
@@ -198,15 +253,24 @@ def check_case(manifest_path: Path) -> tuple[dict[str, Any], list[Path], Path, s
     expected = expected_api_token(oracle, case_id)
     validate_expected_api(expected, case_id, case["expected_failure_class"])
     visible_data = [case["task"].encode(), *(path.read_bytes() for path in visible)]
-    leaked = [variant for variant in expected_api_variants(expected) if any(variant in data for data in visible_data)]
+    leaked = [
+        variant
+        for variant in expected_api_variants(expected)
+        if any(variant in data for data in visible_data)
+    ]
     if leaked:
-        fail(f"{case_id}: EXPECTED_API token or normalized variant leaks into task or visible workspace")
+        fail(
+            f"{case_id}: EXPECTED_API token or normalized variant leaks into task or visible workspace"
+        )
     with tempfile.TemporaryDirectory(prefix="version-guard-corpus-") as temporary:
         workspace = Path(temporary) / "workspace"
         import shutil
+
         shutil.copytree(fixture, workspace)
         command = [sys.executable, str(oracle), str(workspace)]
-        returncode, stdout, stderr, overflow, timed_out = run_bounded(command, workspace)
+        returncode, stdout, stderr, overflow, timed_out = run_bounded(
+            command, workspace
+        )
     if timed_out:
         fail(f"{case_id}: external oracle timed out")
     if overflow:
@@ -217,14 +281,26 @@ def check_case(manifest_path: Path) -> tuple[dict[str, Any], list[Path], Path, s
     try:
         observed = json.loads(lines[-1])
     except (IndexError, json.JSONDecodeError) as exc:
-        fail(f"{case_id}: oracle output is not machine-readable: {exc}; stderr={stderr[-200:]}")
-    if observed.get("case_id") != case_id or observed.get("failure_class") != case["expected_failure_class"] or observed.get("setup_failure") is not False or observed.get("status") != "initial_failure":
+        fail(
+            f"{case_id}: oracle output is not machine-readable: {exc}; stderr={stderr[-200:]}"
+        )
+    if (
+        observed.get("case_id") != case_id
+        or observed.get("failure_class") != case["expected_failure_class"]
+        or observed.get("setup_failure") is not False
+        or observed.get("status") != "initial_failure"
+    ):
         fail(f"{case_id}: external oracle did not report declared baseline class")
     return case, [manifest_path, *visible], oracle, expected, observed
 
 
 def main() -> int:
-    if not CASES.is_dir() or CASES.is_symlink() or not ORACLES.is_dir() or ORACLES.is_symlink():
+    if (
+        not CASES.is_dir()
+        or CASES.is_symlink()
+        or not ORACLES.is_dir()
+        or ORACLES.is_symlink()
+    ):
         fail("missing or unsafe cases/oracles directory")
     manifests = sorted(CASES.glob("*.json"))
     if not 10 <= len(manifests) <= MAX_CASES:
@@ -244,9 +320,17 @@ def main() -> int:
         corpus_bytes += sum(path.stat().st_size for path in [*visible, oracle])
         if corpus_bytes > MAX_CORPUS_BYTES:
             fail("corpus exceeds total byte cap")
-        class_counts[observed["failure_class"]] = class_counts.get(observed["failure_class"], 0) + 1
+        class_counts[observed["failure_class"]] = (
+            class_counts.get(observed["failure_class"], 0) + 1
+        )
         print(f"{case['id']}: {observed['failure_class']}")
-        cases.append({"id": case["id"], "evidence_type": case["evidence_type"], "initial_failure": observed})
+        cases.append(
+            {
+                "id": case["id"],
+                "evidence_type": case["evidence_type"],
+                "initial_failure": observed,
+            }
+        )
     if class_counts.get("general_coding_error", 0) < 1:
         fail("corpus needs at least one general_coding_error no-lift control")
     if class_counts.get("wrong_version_api", 0) < 10:
@@ -259,7 +343,9 @@ def main() -> int:
         "cases": cases,
         "corpus_sha256": digest(tracked),
     }
-    RECEIPT.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    RECEIPT.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(f"CORPUS_RECEIPT={RECEIPT.relative_to(ROOT)}")
     print(json.dumps(receipt, sort_keys=True))
     return 0

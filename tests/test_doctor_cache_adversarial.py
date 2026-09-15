@@ -38,9 +38,15 @@ def test_cache_classification_is_topology_only_and_noncreating(tmp_path, monkeyp
     info, status = _cache_call(empty, monkeypatch)
     assert status == "pass"
     assert info["entries"] == {
-        "validity": "topology_only", "total": 4, "regular": 1,
-        "symlink": 1, "directory": 1, "special": 1,
-        "unreadable": 0, "oversized_names": 0, "names_truncated": False,
+        "validity": "topology_only",
+        "total": 4,
+        "regular": 1,
+        "symlink": 1,
+        "directory": 1,
+        "special": 1,
+        "unreadable": 0,
+        "oversized_names": 0,
+        "names_truncated": False,
     }
     assert info["owner"] == "DocsCache"
     assert info["provenance"] == "fixture_override"
@@ -60,7 +66,9 @@ def test_cache_root_types_fail_closed_without_writes(tmp_path, monkeypatch):
         assert _cache_call(fifo, monkeypatch)[1] == "fail"
 
 
-def test_default_identity_is_owner_derived_and_fixture_is_labeled(tmp_path, monkeypatch):
+def test_default_identity_is_owner_derived_and_fixture_is_labeled(
+    tmp_path, monkeypatch
+):
     monkeypatch.delenv("UNIVERSAL_DOCS_CACHE_DIR", raising=False)
     monkeypatch.setattr(product_cli, "DEFAULT_CACHE_DIR", tmp_path / "default")
     info, status = product_cli._doctor_cache(tmp_path)
@@ -113,8 +121,35 @@ def test_first_run_real_hook_and_preflight_own_cache_write(tmp_path, monkeypatch
     (root / "before/requirements.txt").write_text("demo==1.0.0\n")
     (root / "after/requirements.txt").write_text("demo==1.0.1\n")
     out = io.BytesIO()
-    assert product_cli.main(["init", "--harness", "claude-code", "--project-root", str(root), "--before", "before/requirements.txt", "--after", "after/requirements.txt", "--apply"], stdout=out) == 0
-    monkeypatch.setattr(product_cli, "_doctor_installation", lambda: {"status": "pass", "reason": "identity_match", "module_path": "module.py", "installed_version": "0.4.0rc2", "executable": "python"})
+    assert (
+        product_cli.main(
+            [
+                "init",
+                "--harness",
+                "claude-code",
+                "--project-root",
+                str(root),
+                "--before",
+                "before/requirements.txt",
+                "--after",
+                "after/requirements.txt",
+                "--apply",
+            ],
+            stdout=out,
+        )
+        == 0
+    )
+    monkeypatch.setattr(
+        product_cli,
+        "_doctor_installation",
+        lambda: {
+            "status": "pass",
+            "reason": "identity_match",
+            "module_path": "module.py",
+            "installed_version": "0.4.0rc2",
+            "executable": "python",
+        },
+    )
     assert not cache.exists()
     before, before_status = product_cli._doctor_cache(root)
     assert before_status == "pass" and before["root_status"] == "missing"
@@ -164,7 +199,9 @@ def test_each_owned_cache_entry_requires_regular_topology_and_never_touches_targ
 
 
 @pytest.mark.parametrize("name", sorted(product_cli._DOCTOR_CACHE_OWNED_NAMES))
-def test_owned_entry_stat_error_is_unknown_without_following_or_reading(tmp_path, monkeypatch, name):
+def test_owned_entry_stat_error_is_unknown_without_following_or_reading(
+    tmp_path, monkeypatch, name
+):
     cache = tmp_path / "cache"
     cache.mkdir()
 
@@ -195,7 +232,11 @@ def test_scandir_root_error_is_bounded_and_path_safe(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     cache.mkdir()
     monkeypatch.setenv("UNIVERSAL_DOCS_CACHE_DIR", str(cache))
-    monkeypatch.setattr(product_cli.os, "scandir", lambda path: (_ for _ in ()).throw(PermissionError("private")))
+    monkeypatch.setattr(
+        product_cli.os,
+        "scandir",
+        lambda path: (_ for _ in ()).throw(PermissionError("private")),
+    )
     info, status = product_cli._doctor_cache(Path("/unused"))
     assert status == "unknown"
     assert info["reason"] == "cache_entries_inaccessible"
