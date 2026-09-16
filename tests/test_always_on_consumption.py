@@ -59,8 +59,10 @@ def _executable(tmp_path: Path, *, sleep: float = 0) -> Path:
     return exe
 
 
-def _native_context(exe: Path, timeout_ms: int = 1000) -> Context:
-    return Context({"mode": "native", "executable": str(exe), "timeout_ms": timeout_ms})
+def _native_context(exe: Path, timeout_ms: int = 1000, **extra) -> Context:
+    return Context(
+        {"mode": "native", "executable": str(exe), "timeout_ms": timeout_ms, **extra}
+    )
 
 
 def _frame_only_executable(tmp_path: Path) -> Path:
@@ -348,6 +350,78 @@ def test_native_mode_prefers_valid_stored_git_root(tmp_path, monkeypatch):
     receipt = _receipt(profile)
     assert receipt["resolution"]["source"] == "session_row_git_root"
     assert receipt["resolution"]["root"] == str(root)
+
+
+def test_native_falls_back_to_configured_project_root_when_session_root_is_dry(
+    tmp_path, monkeypatch
+):
+    """Desktop-style sessions (root with nothing to read) use the operator's project."""
+    session_root = tmp_path / "home"
+    session_root.mkdir()
+    profile = _profile_with(tmp_path, str(session_root), None)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    project = _project(tmp_path)
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path), project_root=str(project))
+    plugin.register(ctx)
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug the click API"
+    )
+    assert "STATUS=prepared" in result["context"]
+    receipt = _receipt(profile)
+    assert receipt["status"] == "retrieved"
+    assert (receipt["package"], receipt["target_version"]) == ("click", "8.1.7")
+    assert receipt["resolution"] == {
+        "cwd": str(session_root),
+        "root": str(project),
+        "source": "configured_project_root",
+    }
+
+
+def test_native_fallback_is_respected_only_for_empty_session_roots(
+    tmp_path, monkeypatch
+):
+    """A session root with its own project content is never silently replaced."""
+    session_project = _project(
+        tmp_path,
+        requirements="rich==13.7.1\n",
+        source="import rich\nprint(rich.__version__)\n",
+    )
+    profile = _profile_with(tmp_path, str(session_project), None)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "requirements.txt").write_text("click==8.1.7\n")
+    (other / "app.py").write_text("import click\n")
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path), project_root=str(other))
+    plugin.register(ctx)
+    ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug the rich API"
+    )
+    receipt = _receipt(profile)
+    assert receipt["resolution"]["source"] == "session_row_cwd"
+    assert receipt["package"] != "click"
+    assert "fallback_attempted" not in receipt
+
+
+def test_native_unusable_project_root_is_ignored_not_fatal(tmp_path, monkeypatch):
+    """An unusable optional value must not disable the hook."""
+    session_root = tmp_path / "home"
+    session_root.mkdir()
+    profile = _profile_with(tmp_path, str(session_root), None)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    plugin = load_plugin(profile)
+    ctx = _native_context(_executable(tmp_path), project_root=str(tmp_path / "missing"))
+    plugin.register(ctx)
+    assert "pre_llm_call" in ctx.hooks
+    result = ctx.hooks["pre_llm_call"](
+        turn_id="turn-1", session_id="session-1", user_message="debug the click API"
+    )
+    receipt = _receipt(profile)
+    assert receipt["reason"] == "no_manifest_found"
+    assert receipt["resolution"]["source"] == "session_row_cwd"
+    assert "DOCS_PREFLIGHT_ERROR=no_manifest_found" in result["context"]
 
 
 def test_unresolvable_session_state_writes_abstention_receipt(tmp_path, monkeypatch):

@@ -47,7 +47,19 @@ plugins:
         executable: /absolute/path/to/universal-docs-context
         timeout_ms: 10000
         disabled_profiles: frenchbot
+        # Optional: project used when the session's own root has nothing to
+        # read (e.g. sessions that start in the home directory).
+        project_root: /absolute/path/to/project
 ```
+
+When a session's resolved root contains nothing to read (`no_manifest_found`)
+or cannot be listed (`unreadable_project_root`), an optional `project_root`
+names the project to use instead; receipts then record
+`source: configured_project_root`. It is consulted only for those two reasons —
+every other abstention is respected as-is — and, like every other setting, it
+can never be selected or altered by prompt text. A `project_root` that is not
+an absolute, existing, non-symlinked directory is ignored and the hook keeps
+its normal behaviour.
 
 Native mode records selected, retrieved, abstained, and failed outcomes under
 `$HERMES_HOME/receipts/universal-docs/`, each with the resolved working
