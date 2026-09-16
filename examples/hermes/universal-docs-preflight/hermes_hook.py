@@ -82,12 +82,35 @@ def _settings(ctx: Any) -> dict[str, Any]:
     cache_dir = Path(cache_raw).resolve(strict=False)
     if cache_dir.exists() and (cache_dir.is_symlink() or not cache_dir.is_dir()):
         raise ValueError("invalid_configuration")
+    project_root_raw = ctx.get_config("project_root", "")
+    project_root: Path | None = None
+    if project_root_raw:
+        # Optional: an explicit project for sessions whose own root has nothing
+        # to read. An unusable value must not disable the hook — it is ignored,
+        # and receipts keep showing the session-derived resolution.
+        try:
+            if (
+                not isinstance(project_root_raw, str)
+                or len(project_root_raw.encode()) > 4096
+            ):
+                raise ValueError("invalid_project_root")
+            candidate = Path(project_root_raw).expanduser()
+            if (
+                not candidate.is_absolute()
+                or candidate.is_symlink()
+                or not candidate.is_dir()
+            ):
+                raise ValueError("invalid_project_root")
+            project_root = candidate.resolve(strict=True)
+        except (OSError, ValueError, TypeError):
+            project_root = None
     settings = {
         "mode": mode,
         "executable": _regular_path(ctx.get_config("executable"), executable=True),
         "timeout_ms": timeout,
         "profile_name": profile_name,
         "cache_dir": cache_dir,
+        "project_root": project_root,
     }
     if mode == "static":
         settings["request_file"] = _regular_path(ctx.get_config("request_file"))
@@ -392,6 +415,11 @@ def _cache_evidence(cache_dir: Path, plan: Any, context: str) -> dict[str, Any] 
         return None
 
 
+#: Reasons that mean "this root has nothing to read": the only abstentions for
+#: which an explicitly configured project root may stand in for the session's own.
+_SESSION_ROOT_DRY_REASONS = frozenset({"no_manifest_found", "unreadable_project_root"})
+
+
 def _native_callback(
     settings: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, str] | None:
@@ -429,6 +457,31 @@ def _native_callback(
     cwd, root, resolution = state
     receipt["resolution"] = {"cwd": str(cwd), "root": str(root), "source": resolution}
     plan = select_current_package(root, task=task)
+    fallback_root = settings.get("project_root")
+    if (
+        plan.status != "selected"
+        and plan.reason in _SESSION_ROOT_DRY_REASONS
+        and isinstance(fallback_root, Path)
+        and fallback_root != root
+    ):
+        # The session's own root had nothing to read (e.g. desktop sessions
+        # that start in the home directory). The operator named a project
+        # explicitly, so it stands in — never a guess, and only for "nothing
+        # here": every other abstention is respected as-is.
+        fallback_plan = select_current_package(fallback_root, task=task)
+        if fallback_plan.status == "selected":
+            plan = fallback_plan
+            root = fallback_root
+            receipt["resolution"] = {
+                "cwd": str(cwd),
+                "root": str(root),
+                "source": "configured_project_root",
+            }
+        else:
+            receipt["fallback_attempted"] = {
+                "root": str(fallback_root),
+                "reason": fallback_plan.reason,
+            }
     receipt.update(
         {
             "status": plan.status,
