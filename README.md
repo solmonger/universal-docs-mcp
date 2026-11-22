@@ -67,8 +67,9 @@ Do not point the root at your home directory. Root-relative manifest paths are s
 |---|---|
 | `get_package_info` | Public registry metadata, including `latest_stable` or `null` if none |
 | `get_docs_outline` | Versioned section map; `offset` and `limit` support pagination |
-| `get_package_docs` | Compact documentation or one section; `max_tokens` defaults to 1500, range 200–6000 |
-| `get_project_dependencies` | Supported manifest declarations, safe exact pins, extras/markers, and redaction/registry-lookup flags |
+| `get_package_docs` | Compact documentation, one `section`, or BM25 `query` search; `max_tokens` defaults to 1500, range 200–6000 |
+| `get_official_docs` | Cataloged versioned official docs and `llms.txt` specs (from `source_catalog.json`), with `query` or `section` |
+| `get_project_dependencies` | Supported manifest/lockfile declarations under `UNIVERSAL_DOCS_PROJECT_ROOT` or MCP `roots/list` fallback |
 | `cache_stats` | Entry counts and `available`; counts are `null` when cache state is unknown |
 
 ### Fresh preflight CLI
@@ -119,10 +120,11 @@ Package tools accept `ecosystem` aliases: Python (`python`, `pypi`, `pip`), Java
 
 ### Manifest support and limits
 
-- Python: PEP 508 requirement lines in `requirements*.txt` / `constraints*.txt`; `[project].dependencies` in `pyproject.toml`.
-- JavaScript: `dependencies` and `devDependencies` in `package.json`.
+- Python: PEP 508 requirement lines in `requirements*.txt` / `constraints*.txt`; `[project].dependencies` in `pyproject.toml`; exact pins in `uv.lock`, `poetry.lock`, and read-only `.venv`/`venv` `*.dist-info/METADATA`.
+- JavaScript/TypeScript: `dependencies` and `devDependencies` in `package.json`; exact pins in `package-lock.json`, `pnpm-lock.yaml`, and read-only `node_modules/*/package.json`.
 - Rust: top-level `dependencies` and `dev-dependencies` in `Cargo.toml`; package records in `Cargo.lock`.
-- This is **not** a package manager: no installation, resolution, recursive requirements includes, shell execution, npm lockfile support, Poetry groups, or workspace traversal. Unsupported requirements syntax returns an error instead of incomplete success. Unlisted manifest sections are not enumerated.
+- Proactive hooks: `universal-docs-command-hook --harness {claude,codex} --dynamic` and the Hermes preflight plugin (`pre_llm_call` + `post_tool_call` error hook) resolve exact installed/locked versions across Python, JS/TS, and Rust, fetch up to 3 relevant packages using `allow_cache` + HTTP `ETag`/`304` revalidation, and fall back to read-only local `.pyi`/`.d.ts` type stubs when upstream READMEs miss requested symbols.
+- This is **not** a package manager: no installation, resolution, recursive requirements includes, shell execution, Poetry groups, or workspace traversal. Unsupported requirements syntax returns an error instead of incomplete success. Unlisted manifest sections are not enumerated.
 - Cargo bare versions are ranges. Git/path/workspace/private-registry declarations are not public-registry pins. Python extras and environment markers are preserved but not evaluated.
 - Non-version references are returned as `[redacted]` with `spec_redacted: true` and `registry_lookup: false`. URL/Git/path-like dependency names are rejected rather than returned as identities. This is a supported-name syntax check, not general-purpose secret detection in otherwise valid names or prose; only grant access to trusted manifests.
 

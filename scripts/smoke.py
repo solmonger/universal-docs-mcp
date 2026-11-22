@@ -66,8 +66,8 @@ async def smoke(live: bool) -> dict:
                     result["tools"] = [
                         tool.model_dump(mode="json") for tool in tools.tools
                     ]
-                    assert len(tools.tools) == 5
-                    assert len({tool.name for tool in tools.tools}) == 5
+                    assert len(tools.tools) == 6
+                    assert len({tool.name for tool in tools.tools}) == 6
 
                     async def call(name, args, expected_error=None):
                         response = await session.call_tool(name, args)
@@ -143,6 +143,13 @@ async def smoke(live: bool) -> dict:
                             "ecosystem": "python",
                             "version": "2.32.3",
                         }
+                        query_hit = await call(
+                            "get_package_docs",
+                            {**args, "query": "install"},
+                        )
+                        assert query_hit["found"] is True
+                        assert query_hit["no_match"] is False
+                        assert query_hit["matched_sections"]
                         docs = await call(
                             "get_package_docs",
                             {**args, "force_refresh": True, "max_tokens": 600},
