@@ -90,18 +90,20 @@ Wave 3:                    [06 hermes_hook.py + command_hook.py + context_delive
 
 ## Exact Verification Commands
 
-Always scrub outer `PYTHONPATH` and `VIRTUAL_ENV` so Hermes's Python/MCP v2 install cannot shadow the repo's `.venv` (`mcp>=1.26,<2`):
+Always scrub outer `VIRTUAL_ENV` and pin `PYTHONPATH="$PWD/src"` so (a) Hermes's outer Python/MCP v2 install cannot shadow the repo's `.venv` (`mcp>=1.26,<2`), and (b) isolated git worktrees test their own `src/` instead of the main checkout's editable install:
 
 ```bash
+PY=/Users/operator/Desktop/research/universal-docs-mcp/.venv/bin/python
+
 # Focused slice tests
-env -u PYTHONPATH -u VIRTUAL_ENV .venv/bin/python -m pytest <test_files> -q
+env -u VIRTUAL_ENV PYTHONPATH="$PWD/src" "$PY" -m pytest <test_files> -q
 
 # Full offline suite (baseline on f5ece32: 717 passed, 12 skipped)
-env -u PYTHONPATH -u VIRTUAL_ENV .venv/bin/python -m pytest -q
+env -u VIRTUAL_ENV PYTHONPATH="$PWD/src" "$PY" -m pytest -q
 
 # Lint, format, whitespace
-env -u PYTHONPATH -u VIRTUAL_ENV .venv/bin/python -m ruff check src tests scripts examples
-env -u PYTHONPATH -u VIRTUAL_ENV .venv/bin/python -m ruff format --check src tests scripts examples
+env -u VIRTUAL_ENV PYTHONPATH="$PWD/src" "$PY" -m ruff check src tests scripts examples
+env -u VIRTUAL_ENV PYTHONPATH="$PWD/src" "$PY" -m ruff format --check src tests scripts examples
 git diff --check
 ```
 
