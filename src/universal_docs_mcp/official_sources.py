@@ -13,7 +13,7 @@ async def fetch_official_source(source_id: str, version: str) -> FetchedDocument
     content_type = (
         response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     )
-    if content_type != "text/markdown":
+    if content_type not in source.content_types:
         raise ValueError("invalid_official_document")
     try:
         content = response.content.decode("utf-8")

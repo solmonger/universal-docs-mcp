@@ -1,0 +1,11 @@
+[
+  {"source_id":"mcp-tools","version":"2026-07-28","url":"https://modelcontextprotocol.io/specification/2026-07-28/server/tools","retrieval_url":"https://modelcontextprotocol.io/specification/2026-07-28/server/tools.md","content_types":["text/markdown"]},
+  {"source_id":"mcp-tools","version":"2025-11-25","url":"https://modelcontextprotocol.io/specification/2025-11-25/server/tools","retrieval_url":"https://modelcontextprotocol.io/specification/2025-11-25/server/tools.md","content_types":["text/markdown"]},
+  {"source_id":"pydantic","version":"v2-llms","url":"https://docs.pydantic.dev/latest/llms.txt","retrieval_url":"https://docs.pydantic.dev/latest/llms.txt","content_types":["text/plain","text/markdown"]},
+  {"source_id":"fastapi","version":"llms","url":"https://fastapi.tiangolo.com/llms.txt","retrieval_url":"https://fastapi.tiangolo.com/llms.txt","content_types":["text/plain","text/markdown"]},
+  {"source_id":"httpx","version":"llms","url":"https://www.python-httpx.org/llms.txt","retrieval_url":"https://www.python-httpx.org/llms.txt","content_types":["text/plain","text/markdown"]},
+  {"source_id":"anthropic-sdk","version":"llms","url":"https://docs.anthropic.com/llms.txt","retrieval_url":"https://docs.anthropic.com/llms.txt","content_types":["text/plain","text/markdown"]},
+  {"source_id":"openai-sdk","version":"llms","url":"https://platform.openai.com/llms.txt","retrieval_url":"https://platform.openai.com/llms.txt","content_types":["text/plain","text/markdown"]},
+  {"source_id":"nextjs","version":"llms","url":"https://nextjs.org/docs/llms.txt","retrieval_url":"https://nextjs.org/docs/llms.txt","content_types":["text/plain","text/markdown"]},
+  {"source_id":"hermes-agent","version":"llms","url":"https://hermes-agent.nousresearch.com/docs/llms.txt","retrieval_url":"https://hermes-agent.nousresearch.com/docs/llms.txt","content_types":["text/plain","text/markdown"]}
+]

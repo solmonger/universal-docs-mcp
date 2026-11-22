@@ -12,7 +12,7 @@ from universal_docs_mcp.official_sources import fetch_official_source
     [
         ("https://evil.test/secret", "2026-07-28"),
         ("mcp-tools", "latest"),
-        ("mcp-tools", "2025-11-25"),
+        ("mcp-tools", "2024-01-01"),
         ("mcp-tools", "../../private?token=SYNTHETIC_SECRET"),
         ("mcp-tools/../other", "2026-07-28"),
     ],

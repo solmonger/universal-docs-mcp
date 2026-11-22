@@ -84,15 +84,28 @@ def _github_source_parts(source_url: object, version: str) -> tuple[str, str] | 
             or parsed.password
             or parsed.port not in (None, 443)
             or parsed.fragment
-            or parsed.query != f"ref={quote(version, safe='')}"
         ):
             return None
     except ValueError:
         return None
     parts = parsed.path.strip("/").split("/")
-    if len(parts) != 4 or parts[0] != "repos" or parts[3] != "readme":
+    if len(parts) < 4 or parts[0] != "repos":
         return None
     owner, repo = parts[1:3]
+    if parts[3] == "readme":
+        refs = {f"ref={quote(version, safe='')}"}
+        if not version.startswith("v"):
+            refs.add(f"ref={quote('v' + version, safe='')}")
+        if len(parts) != 4 or parsed.query not in refs:
+            return None
+    elif parts[3:5] == ["releases", "tags"] and len(parts) == 6:
+        tags = {version}
+        if not version.startswith("v"):
+            tags.add("v" + version)
+        if parsed.query or unquote(parts[5]) not in tags:
+            return None
+    else:
+        return None
     if not _GITHUB_OWNER.fullmatch(owner) or not _GITHUB_REPO.fullmatch(repo):
         return None
     return owner, repo
@@ -144,7 +157,19 @@ def package_source_matches(
         if source == expected_source:
             return source_url == expected_url
 
-    if source != "github_readme":
+    if source not in ("github_readme", "github_release"):
+        return False
+    try:
+        source_path = urlsplit(source_url).path.strip("/").split("/")
+    except (TypeError, ValueError):
+        return False
+    if (source == "github_readme") != (
+        len(source_path) == 4 and source_path[3] == "readme"
+    ):
+        return False
+    if source == "github_release" and not (
+        len(source_path) == 6 and source_path[3:5] == ["releases", "tags"]
+    ):
         return False
     source_parts = _github_source_parts(source_url, version)
     if source_parts is None:
