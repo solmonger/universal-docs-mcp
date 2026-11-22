@@ -17,6 +17,7 @@ import os
 import weakref
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import httpx
 import mcp.server.stdio
@@ -25,7 +26,7 @@ from mcp.server import Server
 from mcp.shared.exceptions import McpError
 from pydantic import ValidationError
 
-from . import __version__
+from . import __version__, compaction
 from .cache import DocsCache
 from .compaction import (
     compact,
@@ -38,8 +39,11 @@ from .contracts import RESULT_TYPES, output_schema
 from .docs_fetcher import fetch_docs_content_with_provenance
 from .lockfile import manifest_kind, read_pins
 from .network import ResponseTooLarge, network_lifespan
+from .official_preflight import retrieve_official_document
+from .official_sources import fetch_official_source
 from .registries import fetch_package
 from .retrieval import retrieve_document
+from .source_catalog import source_for
 from .validation import TOOL_ARGS
 
 logger = logging.getLogger(__name__)
@@ -78,9 +82,10 @@ _limiters = weakref.WeakKeyDictionary()
 async def list_tools() -> list[types.Tool]:
     descriptions = {
         "get_package_info": "Get public PyPI/npm/crates.io package metadata and latest stable version (null if none).",
-        "get_package_docs": "Fetch untrusted README/registry descriptions at an exact version or latest stable. Approximate content-only max_tokens budget, not full API search. Check version_binding and truncation before using examples.",
+        "get_package_docs": "Fetch untrusted README/registry descriptions at an exact version or latest stable; query searches relevant sections. Check version_binding and truncation before using examples.",
+        "get_official_docs": "Fetch cataloged, versioned official documentation as untrusted data, optionally searching relevant sections.",
         "get_docs_outline": "Inspect untrusted versioned README sections with offset/limit pagination; use a returned slug with get_package_docs.",
-        "get_project_dependencies": "Read a supported manifest under the configured UNIVERSAL_DOCS_PROJECT_ROOT. Disabled without a root. Nonregistry references are redacted; ranges are not installed pins.",
+        "get_project_dependencies": "Read a supported manifest under the configured root or an MCP workspace root. Nonregistry references are redacted; ranges are not installed pins.",
         "cache_stats": "Inspect cache entry counts and availability.",
     }
     return [
@@ -225,6 +230,8 @@ async def _dispatch_tool(
         return await _handle_get_info(arguments)
     elif name == "get_package_docs":
         return await _handle_get_docs(arguments)
+    elif name == "get_official_docs":
+        return await _handle_official_docs(arguments)
     elif name == "get_docs_outline":
         return await _handle_get_outline(arguments)
     elif name == "get_project_dependencies":
@@ -362,6 +369,25 @@ async def _handle_get_docs(args: dict) -> list[types.TextContent]:
                 "content_trust": "untrusted_upstream",
                 "cached": was_cached,
             }
+    elif args.get("query") is not None:
+        result = compaction.select_by_query(
+            raw, args["query"], budget_tokens=requested_budget, header=header
+        )
+        result.update(
+            {
+                "found": True,
+                "package": info.name,
+                "ecosystem": info.ecosystem,
+                "version": args.get("version") or info.latest_stable,
+                "source": provenance.get("source"),
+                "source_url": provenance.get("source_url"),
+                "fetched_at": provenance.get("fetched_at"),
+                "metadata_refreshed": provenance.get("metadata_refreshed"),
+                "version_binding": provenance.get("version_binding"),
+                "content_trust": "untrusted_upstream",
+                "cached": was_cached,
+            }
+        )
     else:
         result = compact(raw, budget_tokens=requested_budget, header=header)
         result.update(
@@ -379,6 +405,90 @@ async def _handle_get_docs(args: dict) -> list[types.TextContent]:
                 "cached": was_cached,
             }
         )
+    return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+
+async def _handle_official_docs(args: dict[str, Any]) -> list[types.TextContent]:
+    source_id, version = args["source_id"], args["version"]
+    try:
+        source_for(source_id, version)
+    except ValueError as exc:
+        if str(exc) == "unsupported_official_source":
+            raise RetrievalMiss("unsupported_official_source") from None
+        raise
+    document = await retrieve_official_document(
+        source_id,
+        version,
+        cache=cache,
+        fetch_fn=fetch_official_source,
+        use_cache=not args.get("force_refresh", False),
+    )
+    if document is None:
+        raise RetrievalMiss("documentation_not_found")
+    budget_tokens = args.get("max_tokens", 1500)
+    section_key = args.get("section")
+    query = args.get("query")
+    if section_key is not None:
+        sections = parse_sections(document.content)
+        section = get_section(sections, section_key)
+        if section is None:
+            return [
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "found": False,
+                            "error": "section_not_found",
+                            "requested_section": section_key,
+                            "section_map": section_map(sections),
+                        },
+                        indent=2,
+                    ),
+                )
+            ]
+        body = f"## {section.title}\n\n{section.body}"
+        clipped = body[: budget_tokens * 4]
+        selected = {
+            "content": clipped,
+            "truncated": len(body) > budget_tokens * 4,
+            "tokens_included": estimate_tokens(clipped) if clipped else 0,
+            "budget_tokens": budget_tokens,
+            "matched_sections": [section.slug],
+            "no_match": False,
+            "section_map": section_map(sections),
+            "section_map_total": len(sections),
+            "section_map_truncated": len(sections) > 100,
+        }
+    elif query is not None:
+        selected = compaction.select_by_query(
+            document.content, query, budget_tokens=budget_tokens
+        )
+        selected.pop("query", None)
+    else:
+        compacted = compact(document.content, budget_tokens=budget_tokens)
+        selected = {
+            "content": compacted["content"],
+            "truncated": compacted["truncated"],
+            "tokens_included": compacted["tokens_included"],
+            "budget_tokens": budget_tokens,
+            "matched_sections": compacted["sections_included"],
+            "no_match": not compacted["sections_included"],
+            "section_map": compacted["section_map"],
+            "section_map_total": compacted["section_map_total"],
+            "section_map_truncated": compacted["section_map_truncated"],
+        }
+    result = {
+        "found": True,
+        "source_id": document.source_id,
+        "version": document.version,
+        "source": "official_markdown",
+        "source_url": document.source_url,
+        "version_binding": document.version_binding,
+        "fetched_at": document.fetched_at,
+        "content_trust": "untrusted_upstream",
+        "cached": document.cached,
+        **selected,
+    }
     return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
@@ -441,11 +551,61 @@ async def _handle_get_outline(args: dict) -> list[types.TextContent]:
     ]
 
 
-async def _handle_project_dependencies(args: dict) -> list[types.TextContent]:
+async def _handle_project_dependencies(args: dict[str, Any]) -> list[types.TextContent]:
     path = args["manifest_path"]
     root = os.environ.get("UNIVERSAL_DOCS_PROJECT_ROOT")
     if not root:
-        return _error("manifest_access_disabled")
+        try:
+            session = server.request_context.session
+            list_roots = getattr(session, "list_roots", None)
+        except LookupError:
+            list_roots = None
+        if not callable(list_roots):
+            return _error("manifest_access_disabled")
+        try:
+            roots_result = await asyncio.wait_for(list_roots(), timeout=2.0)
+        except Exception:
+            return _error("manifest_access_disabled")
+        candidates: list[Path] = []
+        home = Path.home().resolve()
+        for item in getattr(roots_result, "roots", []):
+            parsed = urlparse(getattr(item, "uri", ""))
+            if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+                continue
+            candidate = Path(unquote(parsed.path))
+            try:
+                if (
+                    not candidate.is_absolute()
+                    or candidate == Path("/")
+                    or candidate.resolve(strict=True) == home
+                    or candidate.is_symlink()
+                    or not candidate.is_dir()
+                ):
+                    continue
+            except OSError:
+                continue
+            candidates.append(candidate.resolve(strict=True))
+        if not candidates:
+            return _error("manifest_access_disabled")
+        if len(candidates) > 1:
+            matches = []
+            for candidate in candidates:
+                try:
+                    resolved_target = Path(
+                        os.path.abspath(
+                            path if Path(path).is_absolute() else candidate / path
+                        )
+                    )
+                    resolved_target.relative_to(candidate)
+                    if resolved_target.is_file() and not resolved_target.is_symlink():
+                        matches.append(candidate)
+                except (OSError, ValueError):
+                    continue
+            if len(matches) != 1:
+                return _error("manifest_access_disabled")
+            root = str(matches[0])
+        else:
+            root = str(candidates[0])
     try:
         pins = read_pins(path, root=Path(root))
     except (OSError, ValueError):

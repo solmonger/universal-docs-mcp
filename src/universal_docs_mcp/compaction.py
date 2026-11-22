@@ -18,6 +18,7 @@ budget shaping, not billing accuracy.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 from typing import Optional
@@ -241,6 +242,155 @@ def compact(
         "sections_included": [s.slug for s in included],
         "sections_omitted": [s.slug for s in omitted[:100]],
         "sections_omitted_total": len(omitted),
+        "section_map": section_map(sections),
+        "section_map_total": len(sections),
+        "section_map_truncated": len(sections) > 100,
+    }
+
+
+@dataclass(frozen=True)
+class RankedSection:
+    section: Section
+    score: float
+    matched_terms: tuple[str, ...]
+    reason: str
+
+
+_STOPWORDS = frozenset(
+    "a an the and or of to in is are for with how on at from use using docs documentation about please".split()
+)
+_WORD = re.compile(r"[A-Za-z0-9_]+")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _singular(term: str) -> str:
+    if len(term) < 4:
+        return term
+    if term.endswith("ies") and len(term) > 4:
+        return term[:-3] + "y"
+    if term.endswith(("sses", "shes", "ches", "xes", "zes")):
+        return term[:-2]
+    if term.endswith("s") and not term.endswith(("ss", "us", "is")):
+        return term[:-1]
+    return term
+
+
+def _tokenize(text: str) -> list[str]:
+    terms: list[str] = []
+    for token in _WORD.findall(text):
+        camel_parts = _CAMEL_BOUNDARY.sub(" ", token).split()
+        parts = [part for camel in camel_parts for part in camel.split("_") if part]
+        candidates = [token.lower(), *(part.lower() for part in parts)]
+        for candidate in candidates:
+            normalized = _singular(candidate)
+            if len(normalized) >= 2 and normalized not in _STOPWORDS:
+                terms.append(normalized)
+    return terms
+
+
+def tokenize_query(text: str | None, *, max_terms: int = 32) -> list[str]:
+    """Tokenize query prose and identifiers into bounded searchable terms."""
+    if not text or max_terms <= 0:
+        return []
+    return list(dict.fromkeys(_tokenize(text)))[:max_terms]
+
+
+def rank_sections(
+    sections: list[Section],
+    query: str | None,
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+    title_weight: float = 3.0,
+) -> list[RankedSection]:
+    """Rank sections with deterministic BM25 over headings and bodies."""
+    terms = tokenize_query(query)
+    if not sections or not terms:
+        return []
+    documents = [
+        (_tokenize(section.title), _tokenize(section.body)) for section in sections
+    ]
+    lengths = [len(title) + len(body) for title, body in documents]
+    average_length = sum(lengths) / len(lengths) or 1.0
+    document_frequency = {
+        term: sum(term in title or term in body for title, body in documents)
+        for term in terms
+    }
+    ranked: list[tuple[int, RankedSection]] = []
+    for index, (section, (title_tokens, body_tokens)) in enumerate(
+        zip(sections, documents)
+    ):
+        title_hits = set(title_tokens)
+        body_hits = set(body_tokens)
+        matches = tuple(
+            term for term in terms if term in title_hits or term in body_hits
+        )
+        if not matches:
+            continue
+        score = 0.0
+        doc_len = lengths[index]
+        for term in matches:
+            df = document_frequency[term]
+            idf = math.log(1 + (len(sections) - df + 0.5) / (df + 0.5))
+            title_tf = title_tokens.count(term)
+            body_tf = body_tokens.count(term)
+            tf = title_weight * title_tf + body_tf
+            norm = tf + k1 * (1 - b + b * doc_len / average_length)
+            score += idf * tf * (k1 + 1) / norm
+        has_title = any(term in title_hits for term in matches)
+        has_body = any(term in body_hits for term in matches)
+        reason = (
+            "title and body term match"
+            if has_title and has_body
+            else "title term match"
+            if has_title
+            else "body term match"
+        )
+        ranked.append((index, RankedSection(section, score, matches, reason)))
+    ranked.sort(key=lambda item: (-round(item[1].score, 6), item[0]))
+    return [item for _, item in ranked]
+
+
+def select_by_query(
+    markdown: str,
+    query: str,
+    *,
+    budget_tokens: int = 1500,
+    header: str = "",
+) -> dict:
+    """Select relevant sections and return a bounded query result with outline."""
+    budget_tokens = max(1, int(budget_tokens))
+    sections = parse_sections(markdown)
+    ranked = rank_sections(sections, query)
+    limit = budget_tokens * 4
+    prefix = header.strip()
+    content_parts = [prefix] if prefix else []
+    used = len(prefix)
+    matched: list[str] = []
+    truncated = False
+    for ranked_section in ranked:
+        rendered = f"## {ranked_section.section.title}\n\n{ranked_section.section.body}"
+        separator = "\n\n" if content_parts else ""
+        available = limit - used - len(separator)
+        if available <= 0:
+            truncated = True
+            break
+        clipped = rendered[:available]
+        content_parts.append(separator + clipped)
+        used += len(separator) + len(clipped)
+        matched.append(ranked_section.section.slug)
+        if clipped != rendered:
+            truncated = True
+            break
+    final_content = "".join(content_parts) if matched else ""
+    return {
+        "content": final_content,
+        "truncated": truncated or len(matched) < len(ranked),
+        "tokens_included": estimate_tokens(final_content) if final_content else 0,
+        "budget_tokens": budget_tokens,
+        "query": query,
+        "matched_sections": matched,
+        "no_match": not matched,
         "section_map": section_map(sections),
         "section_map_total": len(sections),
         "section_map_truncated": len(sections) > 100,

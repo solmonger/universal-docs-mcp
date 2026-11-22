@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import InvalidVersion, Version
 
 from .validation import InfoArgs
 
@@ -264,7 +265,13 @@ def manifest_kind(path: Path) -> Optional[str]:
     return None
 
 
-def _read_scoped(path: Path, root: Path) -> bytes:
+def _read_scoped(
+    path: Path,
+    root: Path,
+    *,
+    max_bytes: int = MAX_MANIFEST_BYTES,
+    allow_truncated: bool = False,
+) -> bytes:
     """Open relative to trusted root descriptors, refusing symlink traversal.
 
     The local manifest tool is intentionally POSIX-only until an equivalent
@@ -293,9 +300,9 @@ def _read_scoped(path: Path, root: Path) -> bytes:
             metadata = os.fstat(stream.fileno())
             if not stat.S_ISREG(metadata.st_mode):
                 raise ValueError("manifest_not_regular_file")
-            if metadata.st_size > MAX_MANIFEST_BYTES:
+            if metadata.st_size > max_bytes and not allow_truncated:
                 raise ValueError("manifest_too_large")
-            return stream.read(MAX_MANIFEST_BYTES + 1)
+            return stream.read(max_bytes + 1)
     finally:
         os.close(directory)
 
@@ -310,10 +317,448 @@ def read_pins(path: str | Path, *, root: Optional[Path] = None) -> list[Pin]:
         )
     parser = _PARSERS[kind]
     if root is not None:
-        data = _read_scoped(p, root)
+        data = _read_scoped(
+            p,
+            root,
+            max_bytes=MAX_LOCKFILE_BYTES
+            if p.name.lower()
+            in {
+                "uv.lock",
+                "poetry.lock",
+                "package-lock.json",
+                "pnpm-lock.yaml",
+                "cargo.lock",
+            }
+            else MAX_MANIFEST_BYTES,
+        )
     else:
         with p.open("rb") as stream:
-            data = stream.read(MAX_MANIFEST_BYTES + 1)
-    if len(data) > MAX_MANIFEST_BYTES:
+            limit = (
+                MAX_LOCKFILE_BYTES
+                if p.name.lower()
+                in {
+                    "uv.lock",
+                    "poetry.lock",
+                    "package-lock.json",
+                    "pnpm-lock.yaml",
+                    "cargo.lock",
+                }
+                else MAX_MANIFEST_BYTES
+            )
+            data = stream.read(limit + 1)
+    limit = (
+        MAX_LOCKFILE_BYTES
+        if p.name.lower()
+        in {
+            "uv.lock",
+            "poetry.lock",
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "cargo.lock",
+        }
+        else MAX_MANIFEST_BYTES
+    )
+    if len(data) > limit:
         raise ValueError("manifest_too_large")
     return parser(data.decode("utf-8"), kind)
+
+
+MAX_LOCKFILE_BYTES = 8 * 1024 * 1024
+_INSTALLED_BYTES = 64 * 1024
+
+
+def _valid_python_version(version: object) -> bool:
+    if not isinstance(version, str) or not version:
+        return False
+    try:
+        Version(version)
+    except InvalidVersion:
+        return False
+    return True
+
+
+def _dep_key(ecosystem: str, name: str) -> tuple[str, str]:
+    if ecosystem == "python":
+        return ecosystem, re.sub(r"[-_.]+", "-", name).lower()
+    return ecosystem, name.lower()
+
+
+def _lock_pins_toml(text: str, source: str, poetry: bool) -> list[Pin]:
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        raise ValueError("invalid_toml") from None
+    packages = data.get("package", [])
+    if not isinstance(packages, list):
+        raise ValueError("invalid_manifest_structure")
+    pins = []
+    for pkg in packages:
+        pkg = _mapping(pkg)
+        name, version = pkg.get("name"), pkg.get("version")
+        if not isinstance(name, str) or not _valid_python_version(version):
+            raise ValueError("invalid_locked_package")
+        origin = pkg.get("source")
+        public = (
+            origin is None
+            if poetry
+            else isinstance(origin, dict)
+            and origin.get("registry")
+            in {"https://pypi.org/simple", "https://pypi.org/simple/"}
+        )
+        if poetry and isinstance(origin, dict):
+            public = origin.get("type") == "legacy" and origin.get("url") in {
+                "https://pypi.org/simple",
+                "https://pypi.org/simple/",
+            }
+        pins.append(
+            Pin(
+                name,
+                "python",
+                f"={version}" if public else "[redacted]",
+                version if public else None,
+                source,
+                registry_lookup=public,
+            )
+        )
+    return pins
+
+
+def parse_uv_lock(text: str, source: str) -> list[Pin]:
+    return _lock_pins_toml(text, source, False)
+
+
+def parse_poetry_lock(text: str, source: str) -> list[Pin]:
+    return _lock_pins_toml(text, source, True)
+
+
+def parse_package_lock_json(text: str, source: str) -> list[Pin]:
+    try:
+        data = _mapping(json.loads(text))
+    except json.JSONDecodeError:
+        raise ValueError("invalid_json") from None
+    packages = data.get("packages")
+    pins = []
+    if isinstance(packages, dict):
+        for path, entry in packages.items():
+            if not isinstance(path, str) or not path.startswith("node_modules/"):
+                continue
+            name = path[len("node_modules/") :]
+            if "/node_modules/" in name:
+                continue
+            entry = _mapping(entry)
+            version = entry.get("version")
+            if not isinstance(version, str) or not re.fullmatch(_SEMVER, version):
+                continue
+            resolved = entry.get("resolved")
+            public = entry.get("link") is not True and (
+                resolved is None
+                or (
+                    isinstance(resolved, str)
+                    and resolved.startswith("https://registry.npmjs.org/")
+                )
+            )
+            pins.append(
+                Pin(
+                    name,
+                    "javascript",
+                    version if public else "[redacted]",
+                    version if public else None,
+                    source,
+                    registry_lookup=public,
+                )
+            )
+    else:
+
+        def visit(deps):
+            if not isinstance(deps, dict):
+                return
+            for name, entry in deps.items():
+                if not isinstance(entry, dict):
+                    continue
+                version, resolved = entry.get("version"), entry.get("resolved")
+                if isinstance(version, str) and re.fullmatch(_SEMVER, version):
+                    public = not entry.get("link") and (
+                        resolved is None
+                        or (
+                            isinstance(resolved, str)
+                            and resolved.startswith("https://registry.npmjs.org/")
+                        )
+                    )
+                    pins.append(
+                        Pin(
+                            name,
+                            "javascript",
+                            version if public else "[redacted]",
+                            version if public else None,
+                            source,
+                            registry_lookup=public,
+                        )
+                    )
+                visit(entry.get("dependencies"))
+
+        visit(data.get("dependencies"))
+    return pins
+
+
+_PNPM_KEY = re.compile(r"^\s{0,4}(?:'(?P<quoted>[^']+)'|(?P<plain>[^:]+)):\s*(?:#.*)?$")
+
+
+def parse_pnpm_lock_yaml(text: str, source: str) -> list[Pin]:
+    pins, seen = [], set()
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = _PNPM_KEY.match(line)
+        if not match:
+            continue
+        key = (match.group("quoted") or match.group("plain")).strip()
+        if key.startswith("/"):
+            key = key[1:]
+        # Peer-qualified keys are normalized at the final parenthesis.
+        package = re.match(
+            r"^(?P<name>(?:@[^/]+/)?[^@]+)@(?P<version>[^()]+)(?:\(.*\))?$", key
+        )
+        if not package:
+            continue
+        name, version = package.group("name"), package.group("version")
+        identity = (name, version)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        public = bool(re.fullmatch(_SEMVER, version))
+        indent = len(line) - len(line.lstrip())
+        for detail in lines[index + 1 :]:
+            if detail.strip() and len(detail) - len(detail.lstrip()) <= indent:
+                break
+            if re.search(r"(?:tarball:|git:|file:|link:)", detail):
+                public = False
+        pins.append(
+            Pin(
+                name,
+                "javascript",
+                version if public else "[redacted]",
+                version if public else None,
+                source,
+                registry_lookup=public,
+            )
+        )
+    return pins
+
+
+_PARSERS.update(
+    {
+        "uv.lock": parse_uv_lock,
+        "poetry.lock": parse_poetry_lock,
+        "package-lock.json": parse_package_lock_json,
+        "pnpm-lock.yaml": parse_pnpm_lock_yaml,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ResolvedDependency:
+    name: str
+    ecosystem: str
+    declared_spec: Optional[str]
+    resolved_version: Optional[str]
+    resolution_source: str
+    registry_lookup: bool
+    direct: bool
+
+
+def read_installed_pins(
+    root: Path,
+    *,
+    ecosystems: tuple[str, ...] = ("python", "javascript"),
+    max_packages: int = 512,
+) -> list[Pin]:
+    root = Path(root)
+    try:
+        root.stat()
+        pins = []
+        if "python" in ecosystems:
+            for env in (".venv", "venv"):
+                for rel in root.glob(
+                    f"{env}/lib/python*/site-packages/*.dist-info/METADATA"
+                ):
+                    if len(pins) >= max_packages:
+                        break
+                    try:
+                        data = _read_scoped(
+                            rel, root, max_bytes=_INSTALLED_BYTES, allow_truncated=True
+                        ).decode("utf-8", "replace")
+                        fields = {}
+                        for line in data.splitlines():
+                            if not line:
+                                break
+                            if ":" in line:
+                                k, v = line.split(":", 1)
+                                fields.setdefault(k.lower(), v.strip())
+                        name, version = fields.get("name"), fields.get("version")
+                        if (
+                            not name
+                            or not version
+                            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+!-]*", version)
+                        ):
+                            continue
+                        public = True
+                        direct_url = rel.parent / "direct_url.json"
+                        try:
+                            url_data = json.loads(
+                                _read_scoped(
+                                    direct_url, root, max_bytes=_INSTALLED_BYTES
+                                )
+                            )
+                            public = not (
+                                str(url_data.get("url", "")).startswith("file://")
+                                or "vcs_info" in url_data
+                            )
+                        except FileNotFoundError:
+                            pass
+                        except (ValueError, json.JSONDecodeError):
+                            public = False
+                        pins.append(
+                            Pin(
+                                name,
+                                "python",
+                                version if public else "[redacted]",
+                                version if public else None,
+                                "venv_metadata",
+                                registry_lookup=public,
+                            )
+                        )
+                    except (OSError, ValueError):
+                        continue
+        if (
+            "javascript" in ecosystems
+            and (root / "node_modules").is_dir()
+            and not (root / "node_modules").is_symlink()
+        ):
+            nm = root / "node_modules"
+            candidates = list(nm.glob("*/package.json")) + [
+                p
+                for s in nm.glob("@*/*")
+                if s.is_dir() and not s.is_symlink()
+                for p in [s / "package.json"]
+            ]
+            for rel in candidates:
+                if len(pins) >= max_packages:
+                    break
+                try:
+                    if rel.is_symlink():
+                        continue
+                    data = _mapping(
+                        json.loads(_read_scoped(rel, root, max_bytes=_INSTALLED_BYTES))
+                    )
+                    name, version = data.get("name"), data.get("version")
+                    if (
+                        isinstance(name, str)
+                        and isinstance(version, str)
+                        and re.fullmatch(_SEMVER, version)
+                    ):
+                        pins.append(
+                            Pin(name, "javascript", version, version, "node_modules")
+                        )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+        return pins
+    except (OSError, ValueError):
+        raise ValueError("unreadable_project_root") from None
+
+
+def resolve_project_dependencies(root: Path) -> list[ResolvedDependency]:
+    root = Path(root)
+    if not root.is_dir() or not os.access(root, os.R_OK):
+        raise ValueError("unreadable_project_root")
+    manifests, locks = [], []
+    manifest_names = (
+        "pyproject.toml",
+        "requirements.txt",
+        "package.json",
+        "Cargo.toml",
+    )
+    lock_names = (
+        "uv.lock",
+        "poetry.lock",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "Cargo.lock",
+    )
+    for name in manifest_names:
+        path = root / name
+        if path.exists():
+            try:
+                manifests.extend(read_pins(name, root=root))
+            except (OSError, ValueError):
+                continue
+    for name in lock_names:
+        path = root / name
+        if path.exists():
+            try:
+                locks.extend(
+                    _PARSERS[manifest_kind(path)](
+                        _read_scoped(path, root, max_bytes=MAX_LOCKFILE_BYTES).decode(
+                            "utf-8"
+                        ),
+                        name,
+                    )
+                )
+            except (OSError, ValueError, UnicodeError):
+                continue
+    try:
+        installed = read_installed_pins(root)
+    except ValueError:
+        installed = []
+    grouped: dict[tuple[str, str], list[Pin]] = {}
+    for pin in manifests:
+        grouped.setdefault(_dep_key(pin.ecosystem, pin.name), []).append(pin)
+    locks_by_key: dict[tuple[str, str], Pin] = {}
+    for pin in locks:
+        if pin.pinned:
+            locks_by_key.setdefault(_dep_key(pin.ecosystem, pin.name), pin)
+    installed_by_key: dict[tuple[str, str], Pin] = {}
+    for pin in installed:
+        if pin.pinned:
+            installed_by_key.setdefault(_dep_key(pin.ecosystem, pin.name), pin)
+    all_keys = set(grouped) | set(locks_by_key) | set(installed_by_key)
+    output = []
+    for ecosystem, key in sorted(all_keys):
+        direct_pins = grouped.get((ecosystem, key), [])
+        lock_pin = locks_by_key.get((ecosystem, key))
+        installed_pin = installed_by_key.get((ecosystem, key))
+        name = (
+            direct_pins[0].name
+            if direct_pins
+            else (lock_pin.name if lock_pin else installed_pin.name)  # type: ignore[union-attr]
+        )
+        exacts = {p.pinned for p in direct_pins if p.pinned}
+        version, src, registry = (
+            (next(iter(exacts)), direct_pins[0].source, direct_pins[0].registry_lookup)
+            if len(exacts) == 1
+            else (
+                None,
+                direct_pins[0].source if direct_pins else "",
+                all(p.registry_lookup for p in direct_pins),
+            )
+        )
+        if len(exacts) > 1:
+            version = None
+        if version is None and len(exacts) <= 1:
+            candidate = lock_pin or installed_pin
+            if candidate:
+                version, src, registry = (
+                    candidate.pinned,
+                    candidate.source,
+                    candidate.registry_lookup,
+                )
+        output.append(
+            ResolvedDependency(
+                name,
+                ecosystem,
+                direct_pins[0].spec if direct_pins else None,
+                version,
+                src,
+                registry,
+                bool(direct_pins),
+            )
+        )
+    return output

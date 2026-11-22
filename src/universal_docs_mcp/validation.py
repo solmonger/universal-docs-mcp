@@ -69,7 +69,33 @@ class OutlinePageArgs(OutlineArgs):
 
 class DocsArgs(OutlineArgs):
     section: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    query: Optional[str] = Field(default=None, min_length=1, max_length=512)
     max_tokens: int = Field(default=1500, ge=200, le=6000)
+
+    @model_validator(mode="after")
+    def section_query_exclusive(self):
+        if self.section is not None and self.query is not None:
+            raise ValueError("section_and_query_mutually_exclusive")
+        return self
+
+
+class OfficialDocsArgs(EmptyArgs):
+    source_id: str = Field(
+        min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9_-]*$"
+    )
+    version: str = Field(
+        min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    )
+    query: Optional[str] = Field(default=None, min_length=1, max_length=512)
+    section: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    max_tokens: int = Field(default=1500, ge=200, le=6000)
+    force_refresh: bool = False
+
+    @model_validator(mode="after")
+    def section_query_exclusive(self):
+        if self.section is not None and self.query is not None:
+            raise ValueError("section_and_query_mutually_exclusive")
+        return self
 
 
 class ManifestArgs(EmptyArgs):
@@ -79,6 +105,7 @@ class ManifestArgs(EmptyArgs):
 TOOL_ARGS = {
     "get_package_info": InfoArgs,
     "get_package_docs": DocsArgs,
+    "get_official_docs": OfficialDocsArgs,
     "get_docs_outline": OutlinePageArgs,
     "get_project_dependencies": ManifestArgs,
     "cache_stats": EmptyArgs,

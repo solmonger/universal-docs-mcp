@@ -189,57 +189,6 @@ def _error_code(exc: BaseException) -> tuple[str, bool]:
     return "internal_error", False
 
 
-def _terms(query: str | None) -> list[str]:
-    if not query:
-        return []
-    stopwords = {
-        "a",
-        "an",
-        "the",
-        "and",
-        "or",
-        "of",
-        "to",
-        "in",
-        "is",
-        "are",
-        "for",
-        "with",
-        "how",
-        "on",
-        "at",
-        "from",
-        "use",
-        "using",
-        "docs",
-        "documentation",
-        "about",
-        "please",
-    }
-    return list(
-        dict.fromkeys(
-            term
-            for term in re.findall(r"[a-z0-9][a-z0-9_-]{1,63}", query.lower())
-            if term not in stopwords
-        )
-    )[:32]
-
-
-def _score_section(section: Any, terms: list[str]) -> tuple[int, str]:
-    title = section.title.lower()
-    body = section.body.lower()
-    title_hits = sum(title.count(term) for term in terms)
-    body_hits = sum(body.count(term) for term in terms)
-    score = title_hits * 4 + body_hits
-    if title_hits:
-        reason = "title and body term match" if body_hits else "title term match"
-    elif body_hits:
-        reason = "body term match"
-    else:
-        reason = ""
-    return score, reason
-
-
 def _truncate_utf8(text: str, limit: int) -> str:
     if len(text.encode("utf-8")) <= limit:
         return text
@@ -259,12 +208,12 @@ def _select_context(
     target_label: str = "Package",
 ) -> tuple[str, dict[str, Any]]:
     # Imports stay local to keep the preflight's public surface wire-neutral.
-    from .compaction import get_section, parse_sections, section_map
+    from .compaction import get_section, parse_sections, rank_sections, section_map
 
     sections = parse_sections(raw)
-    terms = _terms(query)
-    by_identity: dict[str, tuple[Any, int, str, int]] = {}
-    candidates: list[tuple[Any, int, str, int]] = []
+    ranked_sections = rank_sections(sections, query)
+    by_identity: dict[str, tuple[Any, float, str, int]] = {}
+    candidates: list[tuple[Any, float, str, int]] = []
 
     for position, requested in enumerate(requested_sections):
         section = get_section(sections, requested)
@@ -273,15 +222,18 @@ def _select_context(
             by_identity[section.slug] = item
             candidates.append(item)
 
-    if terms:
-        for position, section in enumerate(sections):
-            score, reason = _score_section(section, terms)
-            if score and section.slug not in by_identity:
-                item = (section, score, reason, position)
+    if ranked_sections:
+        positions = {
+            section.slug: position for position, section in enumerate(sections)
+        }
+        for ranked in ranked_sections:
+            section = ranked.section
+            if section.slug not in by_identity:
+                item = (section, ranked.score, ranked.reason, positions[section.slug])
                 by_identity[section.slug] = item
                 candidates.append(item)
 
-    candidates.sort(key=lambda item: (-item[1], item[3]))
+    candidates.sort(key=lambda item: (-round(item[1], 6), item[3]))
     prefix = (
         "UNTRUSTED DOCUMENTATION DATA\n"
         f"{target_label}: {package} v{version}\n"

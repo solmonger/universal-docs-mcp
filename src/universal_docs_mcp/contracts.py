@@ -92,6 +92,36 @@ class CompactDocument(DocumentResult):
     section_map_truncated: bool
 
 
+class QueryDocument(DocumentResult):
+    query: str
+    matched_sections: list[str]
+    no_match: bool
+    section_map: list[SectionInfo]
+    section_map_total: Count
+    section_map_truncated: bool
+
+
+class OfficialDocumentResult(ResultModel):
+    found: Literal[True]
+    source_id: str
+    version: str
+    source: Literal["official_markdown"]
+    source_url: str
+    version_binding: str
+    fetched_at: float = Field(ge=0)
+    content_trust: Literal["untrusted_upstream"]
+    cached: bool
+    content: str
+    truncated: bool
+    tokens_included: Count
+    budget_tokens: int = Field(ge=200, le=6000)
+    matched_sections: list[str]
+    no_match: bool
+    section_map: list[SectionInfo]
+    section_map_total: Count
+    section_map_truncated: bool
+
+
 class DocumentSection(DocumentResult):
     section: SectionInfo
 
@@ -124,7 +154,10 @@ class ProjectDependencies(ResultModel):
 
 RESULT_TYPES = {
     "get_package_info": TypeAdapter(PackageMetadata | ToolError),
-    "get_package_docs": TypeAdapter(CompactDocument | DocumentSection | ToolError),
+    "get_package_docs": TypeAdapter(
+        CompactDocument | DocumentSection | QueryDocument | ToolError
+    ),
+    "get_official_docs": TypeAdapter(OfficialDocumentResult | ToolError),
     "get_docs_outline": TypeAdapter(DocumentOutline | ToolError),
     "get_project_dependencies": TypeAdapter(ProjectDependencies | ToolError),
     "cache_stats": TypeAdapter(CacheAvailable | CacheUnavailable | ToolError),

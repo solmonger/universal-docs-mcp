@@ -23,16 +23,19 @@ async def test_real_stdio_manifest_errors_and_cache(tmp_path):
             }
         )
     )
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": os.defpath,
+        "UNIVERSAL_DOCS_PROJECT_ROOT": str(tmp_path),
+        "UNIVERSAL_DOCS_CACHE_DIR": str(tmp_path / "cache"),
+    }
+    if os.environ.get("PYTHONPATH"):
+        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "universal_docs_mcp.server"],
         cwd=str(tmp_path),
-        env={
-            "HOME": str(tmp_path),
-            "PATH": os.defpath,
-            "UNIVERSAL_DOCS_PROJECT_ROOT": str(tmp_path),
-            "UNIVERSAL_DOCS_CACHE_DIR": str(tmp_path / "cache"),
-        },
+        env=env,
     )
     log_path = tmp_path / "stderr.log"
     with log_path.open("w") as errlog:
@@ -49,6 +52,7 @@ async def test_real_stdio_manifest_errors_and_cache(tmp_path):
                 assert {tool.name for tool in tools.tools} == {
                     "get_package_info",
                     "get_package_docs",
+                    "get_official_docs",
                     "get_docs_outline",
                     "get_project_dependencies",
                     "cache_stats",
