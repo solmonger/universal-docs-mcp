@@ -10,9 +10,13 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
-from .cache import DEFAULT_TTL, DocsCache
+import httpx
+
+from .cache import DEFAULT_TTL, IMMUTABLE_VERSION_TTL, DocsCache
 from .docs_fetcher import FetchedDocument, fetch_docs_content_with_provenance
+from .network import ALLOWED_HOSTS, get_conditional_response
 from .registries import PackageInfo, fetch_package
 from .source_identity import (
     package_names_match,
@@ -25,6 +29,58 @@ FetchPackage = Callable[..., Awaitable[PackageInfo | None]]
 FetchDocument = Callable[..., Awaitable[FetchedDocument | None]]
 _MISSING = object()
 _SUPPORTED_ECOSYSTEMS = frozenset({"python", "javascript", "rust"})
+
+
+async def revalidate_cached_document(
+    record: dict[str, Any],
+    *,
+    cache: DocsCache,
+    cache_key: str,
+    fetch_conditional_fn: Callable[..., Awaitable[httpx.Response]] | None = None,
+) -> tuple[bool, dict[str, Any]]:
+    """Conditionally refresh one already identity-validated cached document."""
+    url = record.get("source_url")
+    try:
+        parsed = urlsplit(url) if isinstance(url, str) else None
+        valid_url = (
+            parsed is not None
+            and parsed.scheme == "https"
+            and parsed.hostname in ALLOWED_HOSTS
+            and not parsed.username
+            and not parsed.password
+            and parsed.port in (None, 443)
+            and not parsed.fragment
+        )
+    except ValueError:
+        valid_url = False
+    etag = record.get("etag")
+    last_modified = record.get("last_modified")
+    if not valid_url or not (etag or last_modified):
+        return False, record
+    conditional_fetch = fetch_conditional_fn or get_conditional_response
+    response = await conditional_fetch(url, etag=etag, last_modified=last_modified)
+    if response.status_code != 304:
+        return False, record
+    fetched_at = time.time()
+    updated = {**record, "fetched_at": fetched_at}
+    response_etag = response.headers.get("etag")
+    response_modified = response.headers.get("last-modified")
+    if response_etag is not None:
+        updated["etag"] = response_etag
+    if response_modified is not None:
+        updated["last_modified"] = response_modified
+    touch = getattr(cache, "touch", None)
+    stored = (
+        touch(
+            cache_key,
+            fetched_at=fetched_at,
+            etag=response_etag,
+            last_modified=response_modified,
+        )
+        if callable(touch)
+        else cache.set(cache_key, updated)
+    )
+    return (True, updated) if stored else (False, record)
 
 
 def valid_doc_record(
@@ -309,12 +365,27 @@ async def retrieve_document(
 
     if requested and not force_refresh:
         for key in _cache_keys(package, ecosystem, requested):
+            immutable_ttl = (
+                IMMUTABLE_VERSION_TTL
+                if getattr(cache, "ttl", DEFAULT_TTL) == DEFAULT_TTL
+                else getattr(cache, "ttl", DEFAULT_TTL)
+            )
+            try:
+                candidate = cache.get(key, ttl=immutable_ttl)
+            except TypeError:
+                candidate = cache.get(key)
+            candidate_ttl = (
+                min(immutable_ttl, IMMUTABLE_VERSION_TTL)
+                if isinstance(candidate, dict)
+                and candidate.get("source") in {"pypi_description", "npm_readme"}
+                else min(getattr(cache, "ttl", DEFAULT_TTL), DEFAULT_TTL)
+            )
             cached = _cached_record(
-                cache.get(key),
+                candidate,
                 package=package,
                 ecosystem=ecosystem,
                 requested_version=requested,
-                ttl=getattr(cache, "ttl", DEFAULT_TTL),
+                ttl=candidate_ttl,
             )
             if cached is None:
                 continue
@@ -344,6 +415,43 @@ async def retrieve_document(
 
     cache_key = f"docsraw-v4:{info.ecosystem}:{info.name}:{version}"
     record: dict[str, Any] | None = None
+    if force_refresh and requested:
+        get_stale = getattr(cache, "get_stale", None)
+        for prior_key in (
+            _cache_keys(package, ecosystem, requested) if callable(get_stale) else ()
+        ):
+            prior = get_stale(prior_key, max_age=IMMUTABLE_VERSION_TTL)
+            if not isinstance(prior, dict):
+                continue
+            validated = _validated_record(
+                prior,
+                package=info.name,
+                ecosystem=info.ecosystem,
+                requested_version=version,
+                expected_repository=info.repository,
+            )
+            if validated is None:
+                continue
+            revalidated, prior = await revalidate_cached_document(
+                prior,
+                cache=cache,
+                cache_key=prior_key,
+            )
+            if revalidated:
+                cache.set(cache_key, prior)
+                for write_namespace in _write_namespaces(ecosystem, info.ecosystem):
+                    for spelling in dict.fromkeys((info.name, package)):
+                        cache.set(
+                            f"docrequest-v4:{write_namespace}:{spelling}:{version}",
+                            prior,
+                        )
+                return _loaded_from_record(
+                    prior,
+                    info,
+                    version=version,
+                    metadata_refreshed=True,
+                    cached=False,
+                )
     if not force_refresh:
         cached = _cached_record(
             cache.get(cache_key),
@@ -385,6 +493,12 @@ async def retrieve_document(
                 for key in PackageInfo.__dataclass_fields__
             },
         }
+        etag = getattr(fetched, "etag", None)
+        last_modified = getattr(fetched, "last_modified", None)
+        if etag is not None:
+            record["etag"] = etag
+        if last_modified is not None:
+            record["last_modified"] = last_modified
         if (
             _validated_record(
                 record,

@@ -11,6 +11,7 @@ from typing import Optional
 
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "universal-docs-mcp"
 DEFAULT_TTL = 86400  # 24 hours
+IMMUTABLE_VERSION_TTL = 7 * 24 * 60 * 60
 DEFAULT_MAX_VALUE_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_ENTRIES = 256
 DEFAULT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
@@ -145,7 +146,7 @@ class DocsCache:
         )
         return encoded, len(encoded.encode("utf-8"))
 
-    def get(self, key: str) -> Optional[dict]:
+    def get(self, key: str, *, ttl: int | None = None) -> Optional[dict]:
         try:
             row = (
                 self._get_conn()
@@ -164,7 +165,7 @@ class DocsCache:
 
         value, fetched_at = row
         try:
-            if time.time() - float(fetched_at) > self.ttl:
+            if time.time() - float(fetched_at) > (self.ttl if ttl is None else ttl):
                 return None
             decoded = json.loads(value)
         except (TypeError, ValueError, RecursionError):
@@ -175,6 +176,60 @@ class DocsCache:
             return None
 
         return decoded if isinstance(decoded, dict) else None
+
+    def touch(
+        self,
+        key: str,
+        *,
+        fetched_at: float | None = None,
+        etag: str | None = None,
+        last_modified: str | None = None,
+    ) -> bool:
+        """Refresh a retained row after upstream confirms its body is unchanged."""
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = self._get_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value, value_bytes FROM docs_cache WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            value = json.loads(row[0])
+            if not isinstance(value, dict):
+                conn.rollback()
+                return False
+            now = time.time() if fetched_at is None else fetched_at
+            value["fetched_at"] = now
+            if etag is not None:
+                value["etag"] = etag
+            if last_modified is not None:
+                value["last_modified"] = last_modified
+            encoded, size = self._encode(value)
+            if size > self.max_value_bytes:
+                conn.rollback()
+                return False
+            total = conn.execute(
+                "SELECT COALESCE(SUM(value_bytes), 0) FROM docs_cache"
+            ).fetchone()[0]
+            if total - row[1] + size > self.max_total_bytes:
+                conn.rollback()
+                return False
+            conn.execute(
+                "UPDATE docs_cache SET value = ?, fetched_at = ?, value_bytes = ? WHERE key = ?",
+                (encoded, now, size, key),
+            )
+            conn.commit()
+            return True
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            self._mark_failed()
+            return False
 
     def get_stale(self, key: str, max_age: int = 7 * 24 * 60 * 60) -> Optional[dict]:
         """Read one retained value for an explicit, bounded failed-check fallback.
