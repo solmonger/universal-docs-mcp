@@ -26,11 +26,14 @@ REQUEST = {
 
 def _adapter(tmp_path: Path, timeout_ms: int = 1000) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
+    preflight = tmp_path / "preflight"
+    preflight.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    preflight.chmod(0o700)
     path = tmp_path / "adapter.json"
     path.write_text(
         json.dumps(
             {
-                "preflight_command": ["/usr/bin/true"],
+                "preflight_command": [str(preflight)],
                 "request": REQUEST,
                 "timeout_ms": timeout_ms,
             }
@@ -297,7 +300,10 @@ def test_doctor_emission_stays_bounded_for_probe_failure(
     # Exercise the public doctor receipt around a deliberately failing probe.
     (root / ".universal-docs/adapter.json").write_text(adapter.read_text())
     monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_COMMAND_HOOK", str(hook))
-    monkeypatch.setenv("UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_PREFLIGHT", "/bin/true")
+    monkeypatch.setenv(
+        "UNIVERSAL_DOCS_INIT_UNIVERSAL_DOCS_PREFLIGHT",
+        str(root / ".universal-docs" / "preflight"),
+    )
     import io
 
     out = io.BytesIO()
