@@ -23,8 +23,8 @@ You are implementing **one assigned slice** of `specs/proactive-docs-v2/`.
 - [x] Slice 03 — Unified BM25 query search & MCP tool upgrades (`slices/03-bm25-search-and-mcp-upgrades.md`) [Wave 1 — integrated + checker-repaired]
 - [x] Slice 04 — Richer exact-version sources: `v`-tags, changelogs, local stubs, expanded catalog (`slices/04-richer-exact-version-sources.md`) [Wave 1B — integrated + checker-repaired]
 - [x] Slice 05 — Fast freshness: immutable exact-version cache & HTTP ETag (`slices/05-fast-freshness-and-etag.md`) [Wave 1B — integrated + checker-repaired]
-- [ ] Slice 02 — Multi-ecosystem, multi-package & error-aware proactive planner (`slices/02-proactive-multi-ecosystem-planner.md`) [Wave 2 — running]
-- [ ] Slice 06 — Proactive harness hooks: Hermes + Claude/Codex dynamic mode + post-tool error trigger (`slices/06-proactive-harness-hooks.md`) [Wave 3; depends on 02, 04, 05]
+- [x] Slice 02 — Multi-ecosystem, multi-package & error-aware proactive planner (`slices/02-proactive-multi-ecosystem-planner.md`) [Wave 2 — integrated + checker-repaired]
+- [ ] Slice 06 — Proactive harness hooks: Hermes + Claude/Codex dynamic mode + post-tool error trigger (`slices/06-proactive-harness-hooks.md`) [Wave 3 — running]
 
 ---
 

@@ -8,7 +8,7 @@ import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 from packaging.version import InvalidVersion, Version
 
@@ -668,6 +668,11 @@ def select_current_package(
             return _abstain("ambiguous_manifest", package=None, source="")
         if not family:
             if any(_foreign_manifest(p) for p in entries):
+                bundle = select_current_packages(
+                    root, task=task, active_files=source_paths or ()
+                )
+                if bundle.status == "selected" and len(bundle.plans) == 1:
+                    return _plan_from_bundle(bundle.plans[0])
                 return _abstain("unsupported_manifest", package=None, source="")
             return _abstain("no_manifest_found", package=None, source="")
         manifests = family
@@ -679,6 +684,11 @@ def select_current_package(
         )
     candidates = {k: p for k, p in index.items() if _is_exact_registry(p)}
     if not candidates:
+        bundle = select_current_packages(
+            root, task=task, active_files=source_paths or ()
+        )
+        if bundle.status == "selected" and len(bundle.plans) == 1:
+            return _plan_from_bundle(bundle.plans[0])
         return _abstain(
             "no_exact_registry_candidate", package=None, source=_source(manifest)
         )
@@ -806,8 +816,15 @@ def select_current_package(
 plan_dependency_change = plan_dependency_changes
 
 
-def to_preflight_request(plan: Plan) -> PreflightRequest:
-    """Convert only a selected plan to the existing strict request model."""
+def to_preflight_request(
+    plan: Plan,
+    *,
+    freshness_mode: Literal[
+        "require_check", "allow_cache", "allow_stale"
+    ] = "require_check",
+    context_max_bytes: int = 4096,
+) -> PreflightRequest:
+    """Convert a selected plan to the existing strict request model."""
     if plan.status != "selected" or plan.target_version is None or plan.package is None:
         raise ValueError("plan_must_be_selected")
     return PreflightRequest.model_validate(
@@ -818,7 +835,471 @@ def to_preflight_request(plan: Plan) -> PreflightRequest:
             "requested_version": plan.target_version,
             "query": plan.query or _QUERY,
             "section_ids": [],
-            "context_max_bytes": 4096,
-            "freshness_mode": "require_check",
+            "context_max_bytes": context_max_bytes,
+            "freshness_mode": freshness_mode,
         }
+    )
+
+
+PLAN_BUNDLE_SCHEMA = "universal-docs.plan-bundle/v1"
+_MAX_DISCOVERY_FILES = 12
+_MAX_DISCOVERY_BYTES = 256 * 1024
+_SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".rs"}
+
+
+@dataclass(frozen=True)
+class PlanBundle:
+    status: str
+    reason: str
+    plans: tuple[Plan, ...]
+    resolution_root_has_manifest: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema": PLAN_BUNDLE_SCHEMA,
+            "status": self.status,
+            "reason": self.reason,
+            "plans": [plan.as_dict() for plan in self.plans],
+            "resolution_root_has_manifest": self.resolution_root_has_manifest,
+        }
+
+
+def _normalized_package(name: str, ecosystem: str) -> str:
+    if ecosystem == "python":
+        return canonicalize_python_name(name)
+    if ecosystem == "rust":
+        return name.replace("_", "-").lower()
+    return name.lower()
+
+
+def _discover_multi_sources(
+    root: Path, active_files: Iterable[str | Path]
+) -> tuple[list[tuple[Path, bool]], int]:
+    selected: list[tuple[Path, bool]] = []
+    total = 0
+    seen: set[Path] = set()
+    try:
+        iterator = iter(active_files)
+        for _ in range(13):
+            try:
+                raw = next(iterator)
+            except StopIteration:
+                break
+            rel = Path(raw) if isinstance(raw, (str, Path)) else Path("..")
+            if (
+                rel.is_absolute()
+                or not rel.parts
+                or any(p in ("", ".", "..") for p in rel.parts)
+                or rel.suffix.lower() not in _SOURCE_SUFFIXES
+            ):
+                continue
+            try:
+                data = _read_source_scoped(root, rel)
+            except (OSError, ValueError):
+                continue
+            if (
+                rel not in seen
+                and len(selected) < _MAX_DISCOVERY_FILES
+                and total + len(data) <= _MAX_DISCOVERY_BYTES
+            ):
+                selected.append((rel, True))
+                seen.add(rel)
+                total += len(data)
+    except Exception:
+        pass
+    discovered: list[tuple[int, str, Path]] = []
+    dirs = 0
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        dirs += 1
+        if dirs > 64:
+            break
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if d
+            not in {
+                ".git",
+                ".venv",
+                "venv",
+                "node_modules",
+                "target",
+                "dist",
+                "build",
+                "__pycache__",
+            }
+            and not (Path(directory) / d).is_symlink()
+        ]
+        for name in filenames:
+            path = Path(directory) / name
+            if path.suffix.lower() not in _SOURCE_SUFFIXES or path.is_symlink():
+                continue
+            rel = path.relative_to(root)
+            if rel in seen:
+                continue
+            try:
+                discovered.append(
+                    (-path.stat(follow_symlinks=False).st_mtime_ns, rel.as_posix(), rel)
+                )
+            except OSError:
+                continue
+    for _, _, rel in sorted(discovered):
+        if len(selected) >= _MAX_DISCOVERY_FILES or total >= _MAX_DISCOVERY_BYTES:
+            break
+        try:
+            data = _read_source_scoped(root, rel)
+        except (OSError, ValueError):
+            continue
+        if total + len(data) > _MAX_DISCOVERY_BYTES:
+            continue
+        selected.append((rel, False))
+        seen.add(rel)
+        total += len(data)
+    return selected, total
+
+
+def _source_imports(path: Path, text: str) -> tuple[set[str], dict[str, set[str]]]:
+    imports: set[str] = set()
+    symbols: dict[str, set[str]] = {}
+    suffix = path.suffix.lower()
+    if suffix == ".py":
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError, RecursionError):
+            return imports, symbols
+        bindings: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for item in node.names:
+                    name = item.name.split(".", 1)[0]
+                    local = item.asname or name
+                    imports.add(name)
+                    bindings[local] = name
+                    symbols.setdefault(name, set()).add(item.name.rsplit(".", 1)[-1])
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                name = node.module.split(".", 1)[0]
+                imports.add(name)
+                for item in node.names:
+                    if item.name != "*":
+                        symbols.setdefault(name, set()).add(item.name)
+                        bindings[item.asname or item.name] = name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                root_name = _attribute_root(node)
+                package = bindings.get(root_name or "")
+                if package:
+                    attribute = node
+                    while isinstance(attribute, ast.Attribute):
+                        symbols.setdefault(package, set()).add(attribute.attr)
+                        attribute = attribute.value
+    elif suffix == ".rs":
+        for match in re.finditer(r"\buse\s+([A-Za-z_][\w]*)(?:::(.*?))?;", text, re.S):
+            name = match.group(1).replace("_", "-").lower()
+            imports.add(name)
+            symbols.setdefault(name, set()).update(
+                re.findall(r"[A-Za-z_][\w]*", match.group(2) or "")
+            )
+    else:
+        pattern = r"\bimport\s+(?:([\s\S]*?)\s+from\s+)?['\"]([^'\"]+)['\"]|\brequire\(\s*['\"]([^'\"]+)['\"]\s*\)"
+        for match in re.finditer(pattern, text):
+            raw = match.group(2) or match.group(3)
+            if raw.startswith((".", "/")):
+                continue
+            parts = raw.split("/")
+            name = (
+                "/".join(parts[:2])
+                if raw.startswith("@") and len(parts) > 1
+                else parts[0]
+            )
+            imports.add(name)
+            symbols.setdefault(name, set()).update(
+                re.findall(r"[A-Za-z_$][\w$]*", match.group(1) or "")
+            )
+    return imports, symbols
+
+
+def _normalize_proactive_task(task: object) -> str | None:
+    """Normalize real chat prompts (multi-line or long) without rejecting newlines."""
+    if not isinstance(task, str) or "\x00" in task:
+        return None
+    cleaned = "".join(c if c in "\n\r\t" or ord(c) >= 32 else " " for c in task[:16384])
+    normalized = " ".join(cleaned.split())
+    encoded = normalized.encode("utf-8")
+    if len(encoded) > 1024:
+        normalized = encoded[:1024].decode("utf-8", errors="ignore").strip()
+    return normalized
+
+
+def select_current_packages(
+    project_root: Path,
+    *,
+    task: str | None = None,
+    active_files: Iterable[str | Path] = (),
+    max_packages: int = 3,
+) -> PlanBundle:
+    from .lockfile import resolve_project_dependencies
+
+    root = Path(project_root)
+    try:
+        deps = resolve_project_dependencies(root)
+    except (OSError, ValueError):
+        return PlanBundle("abstained", "unreadable_project_root", (), False)
+    manifest_names = (
+        "pyproject.toml",
+        "requirements.txt",
+        "package.json",
+        "Cargo.toml",
+    )
+    has_manifest = bool(deps) or any((root / n).is_file() for n in manifest_names)
+    if not has_manifest:
+        reason = (
+            "unsupported_manifest"
+            if any((root / n).exists() for n in _FOREIGN_MANIFESTS)
+            else "no_manifest_found"
+        )
+        return PlanBundle("abstained", reason, (), False)
+    task_value = _normalize_proactive_task(task) if task is not None else ""
+    if task is not None and task_value is None:
+        return PlanBundle("abstained", "task_signal_invalid", (), True)
+    sources, _ = _discover_multi_sources(root, active_files)
+    task_lower = task_value.lower()
+    scores: dict[tuple[str, str], int] = {}
+    found_symbols: dict[tuple[str, str], set[str]] = {}
+    imported_sources: dict[str, set[str]] = {}
+    for rel, is_active in sources:
+        try:
+            raw = _read_source_scoped(root, rel).decode("utf-8")
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        imported, symbols = _source_imports(rel, raw)
+        for dep in deps:
+            key = _normalized_package(dep.name, dep.ecosystem)
+            aliases = {key, dep.name.lower(), dep.name.lower().replace("-", "_")}
+            if any(i.lower() in aliases for i in imported):
+                imported_sources.setdefault(key, set()).add(
+                    "active" if is_active else "discovered"
+                )
+                found_symbols.setdefault((dep.ecosystem, key), set()).update(
+                    s for i, ss in symbols.items() if i.lower() in aliases for s in ss
+                )
+    for dep in deps:
+        key = _normalized_package(dep.name, dep.ecosystem)
+        named = bool(
+            re.search(
+                r"(?<![\w@])" + re.escape(dep.name) + r"(?![\w])", task_lower, re.I
+            )
+            or (
+                dep.ecosystem == "python"
+                and "-" in dep.name
+                and re.search(
+                    r"(?<![\w@])" + re.escape(dep.name.replace("-", "_")) + r"(?![\w])",
+                    task_lower,
+                    re.I,
+                )
+            )
+        )
+        provenance = imported_sources.get(key, set())
+        if not dep.direct and not (named or "active" in provenance):
+            continue
+        score = 10 if named else 0
+        score += 6 if "active" in provenance else 0
+        score += 4 if "discovered" in provenance else 0
+        symbols = found_symbols.get((dep.ecosystem, key), set())
+        score += 2 * sum(
+            1
+            for symbol in symbols
+            if re.search(r"\b" + re.escape(symbol) + r"\b", task_value, re.I)
+        )
+        if score and dep.resolved_version and dep.registry_lookup:
+            scores[(dep.ecosystem, key)] = score
+    limit = max(1, min(3, int(max_packages)))
+    ranked = sorted(scores, key=lambda k: (-scores[k], k[1]))[:limit]
+    if not ranked:
+        reason = (
+            "task_package_not_locally_proven"
+            if task_value
+            else "no_exact_registry_candidate"
+        )
+        return PlanBundle("abstained", reason, (), True)
+    by_key = {(d.ecosystem, _normalized_package(d.name, d.ecosystem)): d for d in deps}
+    plans = []
+    for ecosystem, key in ranked:
+        dep = by_key[(ecosystem, key)]
+        display = dep.name
+        query = " ".join(
+            [
+                display,
+                dep.resolved_version or "",
+                task_value or _QUERY,
+                *sorted(found_symbols.get((ecosystem, key), set())),
+            ]
+        ).strip()[:512]
+        plans.append(
+            Plan(
+                "selected",
+                "current_exact_pin",
+                display,
+                ecosystem,
+                None,
+                dep.resolved_version,
+                dep.resolution_source,
+                query,
+                {
+                    "mode": "source_backed"
+                    if key in imported_sources
+                    else "task_named",
+                    "symbols": sorted(found_symbols.get((ecosystem, key), set()))[:24],
+                    "source_files_inspected": len(sources),
+                },
+            )
+        )
+    return PlanBundle("selected", "packages_selected", tuple(plans), True)
+
+
+def select_for_error(
+    project_root: Path,
+    *,
+    error_text: str,
+    active_files: Iterable[str | Path] = (),
+    max_packages: int = 2,
+) -> PlanBundle:
+    from .lockfile import resolve_project_dependencies
+
+    if not isinstance(error_text, str):
+        return PlanBundle("abstained", "error_text_invalid", (), False)
+    error_text = "".join(
+        c for c in error_text[: 16 * 1024] if c in "\n\t" or ord(c) >= 32
+    )
+    try:
+        deps = resolve_project_dependencies(Path(project_root))
+    except (OSError, ValueError):
+        return PlanBundle("abstained", "unreadable_project_root", (), False)
+    mentions = set()
+    for pattern in (
+        r"no module named ['\"]?([A-Za-z0-9_.-]+)['\"]?",
+        r"cannot import name ['\"]?([A-Za-z0-9_]+)['\"]? from ['\"]?([A-Za-z0-9_.-]+)['\"]?",
+        r"cannot find module ['\"]?(@[^/'\"\s]+/[^/'\"\s]+|[^/'\"\s]+)['\"]?",
+        r"(?:site-packages|node_modules)/(@[^/\s]+/[^/\s]+|[^/\s]+)",
+        r"module ['\"]([A-Za-z0-9_.-]+)['\"] has no attribute",
+    ):
+        for match in re.finditer(pattern, error_text, re.I):
+            value = (
+                match.group(2)
+                if match.lastindex and match.lastindex > 1 and match.group(2)
+                else match.group(1)
+            )
+            cleaned = value.strip("'\"")
+            if cleaned.startswith("@"):
+                mentions.add(cleaned.lower())
+            else:
+                mentions.add(cleaned.split(".", 1)[0].lower())
+    symbols = set(
+        re.findall(
+            r"has no attribute ['\"]?([\w]+)['\"]?|unexpected keyword argument ['\"]?([\w]+)['\"]?|cannot import name ['\"]?([\w]+)['\"]?",
+            error_text,
+            re.I,
+        )
+    )
+    symbol_terms = {part for tup in symbols for part in tup if part}
+    error_class = re.search(
+        r"\b(ImportError|ModuleNotFoundError|AttributeError|TypeError|DeprecationWarning|ValidationError|ERR_MODULE_NOT_FOUND)\b|\b(error\[E\d+\])",
+        error_text,
+        re.I,
+    )
+    error_name = error_class.group(0) if error_class else "runtime error"
+    matches = []
+    for dep in deps:
+        key = _normalized_package(dep.name, dep.ecosystem)
+        aliases = {key, dep.name.lower(), dep.name.lower().replace("-", "_")}
+        if (
+            dep.resolved_version
+            and dep.registry_lookup
+            and any(m in aliases or m.replace("_", "-") in aliases for m in mentions)
+        ):
+            matches.append((dep, key))
+    matches = matches[: max(1, min(2, int(max_packages)))]
+    if not matches:
+        return PlanBundle(
+            "abstained",
+            "task_package_not_locally_proven",
+            (),
+            any(
+                (Path(project_root) / n).is_file()
+                for n in (
+                    "pyproject.toml",
+                    "requirements.txt",
+                    "package.json",
+                    "Cargo.toml",
+                )
+            ),
+        )
+    plans = tuple(
+        Plan(
+            "selected",
+            "error_package_matched",
+            dep.name,
+            dep.ecosystem,
+            None,
+            dep.resolved_version,
+            dep.resolution_source,
+            " ".join(
+                [
+                    dep.name,
+                    dep.resolved_version or "",
+                    error_name,
+                    *sorted(symbol_terms),
+                ]
+            )[:512],
+            {"mode": "error", "symbols": sorted(symbol_terms)[:24]},
+        )
+        for dep, _ in matches
+    )
+    return PlanBundle("selected", "error_package_matched", plans, True)
+
+
+def to_preflight_requests(
+    bundle: PlanBundle,
+    *,
+    total_budget_bytes: int = 6144,
+    freshness_mode: Literal[
+        "require_check", "allow_cache", "allow_stale"
+    ] = "allow_cache",
+) -> list[PreflightRequest]:
+    if bundle.status != "selected" or not bundle.plans:
+        return []
+    if total_budget_bytes < 1500 * len(bundle.plans):
+        raise ValueError("budget_too_small")
+    weights = [max(1, len((p.query or "").split())) for p in bundle.plans]
+    remaining = total_budget_bytes - 1500 * len(bundle.plans)
+    total_weight = sum(weights)
+    budgets = [1500 + remaining * w // total_weight for w in weights]
+    budgets[-1] += total_budget_bytes - sum(budgets)
+    return [
+        PreflightRequest.model_validate(
+            {
+                "package": p.package,
+                "ecosystem": p.ecosystem,
+                "selection": "requested",
+                "requested_version": p.target_version,
+                "query": p.query or _QUERY,
+                "section_ids": [],
+                "context_max_bytes": budgets[i],
+                "freshness_mode": freshness_mode,
+            }
+        )
+        for i, p in enumerate(bundle.plans)
+    ]
+
+
+def _plan_from_bundle(plan: Plan) -> Plan:
+    """Project a one-target bundle back onto the legacy singular contract."""
+    return Plan(
+        plan.status,
+        plan.reason,
+        plan.package,
+        plan.ecosystem,
+        plan.previous_version,
+        plan.target_version,
+        plan.resolution_source,
+        plan.query,
+        plan.selection,
     )
