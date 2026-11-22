@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import selectors
 import signal
 import stat
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Literal, TextIO
 
 from .context_delivery import MAX_PACKET_BYTES as MAX_CONTEXT_PACKET_BYTES
-from .context_delivery import build_context_packet
+from .context_delivery import build_bundle_packet, build_context_packet
 from .preflight import PreflightInput, parse_request
 
 SCHEMA = "universal-docs.preflight/v1"
@@ -581,6 +582,8 @@ def handle_event(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harness", choices=("claude", "codex"), required=True)
+    parser.add_argument("--dynamic", action="store_true")
+    parser.add_argument("--project-root", type=Path)
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--config", type=Path)
     source.add_argument("--request-file", type=Path)
@@ -599,6 +602,147 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deadline-ms", type=int, default=30_000)
     parser.add_argument("--timeout-ms", type=int)
     return parser
+
+
+_TECHNICAL_PROMPT = re.compile(
+    r"\b(code|coding|debug|implement|package|dependency|api|sdk|migration|library|import|upgrade|install|technical|fix|error|bug|test|pytest|build|lint|refactor|endpoint|schema|async|client|hook|mcp|plugin|validationerror)\b",
+    re.I,
+)
+
+
+def _dynamic_payload(
+    raw_event: bytes,
+    *,
+    harness: Harness,
+    executable: Path,
+    project_root: Path | None,
+    timeout_ms: int | None,
+) -> dict[str, Any]:
+    """Fail-open repo-aware hook; event strings only select bounded prompt/root data."""
+    try:
+        event = _json_object(
+            raw_event, error="invalid_hook_event", too_large="invalid_hook_event"
+        )
+    except AdapterConfigError:
+        return {}
+    prompt = event.get("prompt", event.get("user_message"))
+    if (
+        not isinstance(prompt, str)
+        or not prompt
+        or len(prompt.encode("utf-8")) > 16_384
+    ):
+        return {}
+    cwd_value = event.get("cwd")
+    root: Path | None = None
+    if isinstance(cwd_value, str) and len(cwd_value.encode("utf-8")) <= 4096:
+        candidate = Path(cwd_value)
+        if (
+            candidate.is_absolute()
+            and not candidate.is_symlink()
+            and candidate.is_dir()
+        ):
+            root = candidate.resolve(strict=True)
+    if root is None and project_root is not None:
+        candidate = project_root
+        if (
+            candidate.is_absolute()
+            and not candidate.is_symlink()
+            and candidate.is_dir()
+        ):
+            root = candidate.resolve(strict=True)
+    if root is None:
+        return {}
+    from .planner import select_current_packages, to_preflight_requests
+
+    technical = bool(_TECHNICAL_PROMPT.search(prompt))
+    if not technical:
+        try:
+            from .lockfile import resolve_project_dependencies
+
+            dependencies = resolve_project_dependencies(root)
+        except (OSError, ValueError):
+            return {}
+        lowered = prompt.lower()
+        technical = any(
+            re.search(r"(?<![\w@])" + re.escape(alias) + r"(?![\w])", lowered)
+            for dependency in dependencies
+            for alias in {
+                dependency.name.lower(),
+                dependency.name.lower().replace("-", "_"),
+                dependency.name.lower().replace("_", "-"),
+            }
+        )
+    if not technical:
+        return {}
+
+    bundle = select_current_packages(root, task=prompt, max_packages=3)
+    if (
+        bundle.status != "selected"
+        and bundle.reason in {"no_manifest_found", "unreadable_project_root"}
+        and project_root is not None
+    ):
+        candidate = project_root
+        if (
+            candidate.is_absolute()
+            and not candidate.is_symlink()
+            and candidate.is_dir()
+        ):
+            fallback_root = candidate.resolve(strict=True)
+            if fallback_root != root:
+                fallback_bundle = select_current_packages(
+                    fallback_root, task=prompt, max_packages=3
+                )
+                if fallback_bundle.status == "selected":
+                    bundle = fallback_bundle
+                    root = fallback_root
+    if bundle.status != "selected":
+        return {}
+    requests = to_preflight_requests(
+        bundle, total_budget_bytes=6144, freshness_mode="allow_cache"
+    )
+    packets: list[str] = []
+    local_stubs: list[Any] = []
+    for plan, request in zip(bundle.plans, requests, strict=True):
+        packet_added = False
+        try:
+            effective_timeout = (
+                _timeout(timeout_ms) if timeout_ms is not None else request.deadline_ms
+            )
+            config = HookConfig((str(executable),), request, effective_timeout)
+            process = _invoke_preflight(config)
+            if process.status == "completed" and process.returncode == 0:
+                result = _parse_preflight_output(process.stdout)
+                if result is not None:
+                    packets.append(build_context_packet(request, result))
+                    packet_added = True
+        except (AdapterConfigError, OSError, ValueError):
+            packet_added = False
+        if not packet_added:
+            try:
+                from .local_stubs import extract_local_stubs
+
+                stub = extract_local_stubs(
+                    root,
+                    plan.package or "",
+                    plan.ecosystem,
+                    plan.target_version or "",
+                    symbols=plan.selection.get("symbols", ()),
+                )
+                if stub is not None:
+                    local_stubs.append(stub)
+            except (OSError, ValueError, TypeError):
+                pass
+    if not packets and not local_stubs:
+        return {}
+    try:
+        packet = build_bundle_packet(packets, local_stubs=local_stubs)
+    except ValueError:
+        return {}
+    return (
+        format_claude_output(packet)
+        if harness == "claude"
+        else format_codex_output(packet)
+    )
 
 
 def _config_from_args(args: argparse.Namespace) -> HookConfig:
@@ -679,6 +823,43 @@ def main(
     parser = _build_parser()
     args = parser.parse_args(argv)
     output = stdout or sys.stdout
+    if args.dynamic:
+        if (
+            args.config is not None
+            or args.request_file is not None
+            or any(
+                value is not None
+                for value in (
+                    args.package,
+                    args.ecosystem,
+                    args.selection,
+                    args.requested_version,
+                    args.query,
+                    args.freshness_mode,
+                )
+            )
+            or args.section_id
+        ):
+            _write_payload({}, output)
+            return 0
+        event_stream = stdin or sys.stdin.buffer
+        raw_event = event_stream.read(MAX_EVENT_BYTES + 1)
+        payload = (
+            _dynamic_payload(
+                raw_event,
+                harness=args.harness,
+                executable=args.preflight_executable,
+                project_root=args.project_root,
+                timeout_ms=args.timeout_ms,
+            )
+            if args.preflight_executable is not None
+            else {}
+        )
+        _write_payload(payload, output)
+        return 0
+    if args.project_root is not None:
+        _write_payload(_block("explicit_target_incomplete"), output)
+        return 0
     try:
         config = _config_from_args(args)
     except AdapterConfigError as exc:

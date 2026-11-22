@@ -1,6 +1,6 @@
 # Proactive Fresh Documentation v2 (`proactive-docs-v2`)
 
-Status: spec frozen; ready for Wave 1 maker execution
+Status: all 6 slices implemented, checker-verified, and integrated on `feat/proactive-docs-v2`
 Last updated: 2026-11-22
 Base commit: `f5ece32` (`main`)
 Branch: `feat/proactive-docs-v2`
@@ -24,7 +24,7 @@ You are implementing **one assigned slice** of `specs/proactive-docs-v2/`.
 - [x] Slice 04 — Richer exact-version sources: `v`-tags, changelogs, local stubs, expanded catalog (`slices/04-richer-exact-version-sources.md`) [Wave 1B — integrated + checker-repaired]
 - [x] Slice 05 — Fast freshness: immutable exact-version cache & HTTP ETag (`slices/05-fast-freshness-and-etag.md`) [Wave 1B — integrated + checker-repaired]
 - [x] Slice 02 — Multi-ecosystem, multi-package & error-aware proactive planner (`slices/02-proactive-multi-ecosystem-planner.md`) [Wave 2 — integrated + checker-repaired]
-- [ ] Slice 06 — Proactive harness hooks: Hermes + Claude/Codex dynamic mode + post-tool error trigger (`slices/06-proactive-harness-hooks.md`) [Wave 3 — running]
+- [x] Slice 06 — Proactive harness hooks: Hermes + Claude/Codex dynamic mode + post-tool error trigger (`slices/06-proactive-harness-hooks.md`) [Wave 3 — integrated + checker-repaired]
 
 ---
 

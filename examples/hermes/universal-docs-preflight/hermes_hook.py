@@ -72,7 +72,7 @@ def _settings(ctx: Any) -> dict[str, Any]:
     profile_name = (
         profile_home.name if profile_home.parent.name == "profiles" else "default"
     )
-    if profile_name in disabled_profiles:
+    if profile_name == "frenchbot" or profile_name in disabled_profiles:
         raise ValueError("profile_disabled")
     cache_raw = ctx.get_config(
         "cache_dir", str(profile_home / "cache" / "universal-docs-preflight")
@@ -423,7 +423,10 @@ _SESSION_ROOT_DRY_REASONS = frozenset({"no_manifest_found", "unreadable_project_
 def _native_callback(
     settings: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, str] | None:
-    from universal_docs_mcp.planner import select_current_package, to_preflight_request
+    from universal_docs_mcp.planner import (
+        select_current_packages,
+        to_preflight_requests,
+    )
 
     session = payload.get("session_id")
     if not isinstance(session, str) or not session:
@@ -433,12 +436,7 @@ def _native_callback(
         if isinstance(payload.get("user_message"), str)
         else None
     )
-    # Dependency presence alone is not an eligible technical turn.
-    if not task or not re.search(
-        r"\b(code|coding|debug|implement|package|dependency|api|sdk|migration|library|import|upgrade|install|technical)\b",
-        task,
-        re.I,
-    ):
+    if not task:
         return None
     receipt_dir = _hermes_home() / "receipts" / "universal-docs"
     receipt: dict[str, Any] = {
@@ -455,12 +453,14 @@ def _native_callback(
         _atomic_receipt(receipt_dir, receipt)
         return _missing("session_state_unavailable")
     cwd, root, resolution = state
+    if not _is_eligible_turn(task, root):
+        return None
     receipt["resolution"] = {"cwd": str(cwd), "root": str(root), "source": resolution}
-    plan = select_current_package(root, task=task)
+    bundle = select_current_packages(root, task=task, max_packages=3)
     fallback_root = settings.get("project_root")
     if (
-        plan.status != "selected"
-        and plan.reason in _SESSION_ROOT_DRY_REASONS
+        bundle.status != "selected"
+        and bundle.reason in _SESSION_ROOT_DRY_REASONS
         and isinstance(fallback_root, Path)
         and fallback_root != root
     ):
@@ -468,9 +468,11 @@ def _native_callback(
         # that start in the home directory). The operator named a project
         # explicitly, so it stands in — never a guess, and only for "nothing
         # here": every other abstention is respected as-is.
-        fallback_plan = select_current_package(fallback_root, task=task)
-        if fallback_plan.status == "selected":
-            plan = fallback_plan
+        fallback_bundle = select_current_packages(
+            fallback_root, task=task, max_packages=3
+        )
+        if fallback_bundle.status == "selected":
+            bundle = fallback_bundle
             root = fallback_root
             receipt["resolution"] = {
                 "cwd": str(cwd),
@@ -480,62 +482,312 @@ def _native_callback(
         else:
             receipt["fallback_attempted"] = {
                 "root": str(fallback_root),
-                "reason": fallback_plan.reason,
+                "reason": fallback_bundle.reason,
             }
     receipt.update(
         {
-            "status": plan.status,
-            "reason": plan.reason,
-            "package": plan.package,
-            "target_version": plan.target_version,
+            "status": bundle.status,
+            "reason": bundle.reason,
+            "package": bundle.plans[0].package if bundle.plans else None,
+            "target_version": bundle.plans[0].target_version if bundle.plans else None,
+            "packages": [],
         }
     )
-    if plan.status != "selected":
+    if bundle.status != "selected":
         _atomic_receipt(receipt_dir, receipt)
-        return _missing(plan.reason)
-    request_path: Path | None = None
+        return _missing(bundle.reason)
+    request_paths: list[Path] = []
     try:
-        request = to_preflight_request(plan).model_dump(mode="json", exclude_none=True)
+        requests = to_preflight_requests(
+            bundle, total_budget_bytes=6144, freshness_mode="allow_cache"
+        )
+        contexts: list[str] = []
+        packages: list[dict[str, Any]] = []
+        local_stubs: list[Any] = []
+        local_stub_evidence: list[dict[str, Any]] = []
+        last_error: str | None = None
+        for plan, request_model in zip(bundle.plans, requests, strict=True):
+            request = request_model.model_dump(mode="json", exclude_none=True)
+            request["deadline_ms"] = max(1000, min(settings["timeout_ms"] - 100, 9000))
+            request_path = _request_file(receipt_dir / ".requests", request)
+            request_paths.append(request_path)
+            raw, error = _read_child(dict(settings, request_file=str(request_path)))
+            if error:
+                last_error = error
+            framed = _missing(error) if error else _frame_context(raw)
+            context = framed["context"]
+            retrieved = (
+                "DOCS_PREFLIGHT_STATUS=prepared\n" in context
+                or "DOCS_PREFLIGHT_STATUS=prepared_stale\n" in context
+            )
+            cache_evidence = (
+                _cache_evidence(settings["cache_dir"], plan, context)
+                if retrieved
+                else None
+            )
+            retrieved = retrieved and cache_evidence is not None
+            stub_used = False
+            if not retrieved:
+                try:
+                    from universal_docs_mcp.local_stubs import extract_local_stubs
+
+                    stub = extract_local_stubs(
+                        root,
+                        plan.package,
+                        plan.ecosystem,
+                        plan.target_version,
+                        symbols=plan.selection.get("symbols", ()),
+                    )
+                except (OSError, ValueError, TypeError):
+                    stub = None
+                if stub is not None:
+                    local_stubs.append(stub)
+                    local_stub_evidence.append(
+                        {
+                            "package": stub.package,
+                            "version": stub.version,
+                            "source": stub.source,
+                            "version_binding": stub.version_binding,
+                            "relative_path": stub.relative_path,
+                            "content_bytes": stub.content_bytes,
+                        }
+                    )
+                    retrieved = True
+                    stub_used = True
+            packages.append(
+                {
+                    "package": plan.package,
+                    "target_version": plan.target_version,
+                    "status": "retrieved" if retrieved else "failed",
+                    "error": None
+                    if retrieved
+                    else (error or "cache_evidence_missing_or_mismatched"),
+                    "cache_evidence": cache_evidence,
+                    "local_stub_used": stub_used,
+                }
+            )
+            if retrieved and cache_evidence is not None:
+                contexts.append(
+                    context.removeprefix(
+                        "DOCS_PREFLIGHT_STATUS=prepared\n"
+                    ).removeprefix("DOCS_PREFLIGHT_STATUS=prepared_stale\n")
+                )
+        if len(contexts) > 1 or (
+            local_stubs and contexts and "Receipt: UDCTX:" in contexts[0]
+        ):
+            from universal_docs_mcp.context_delivery import build_bundle_packet
+
+            context = build_bundle_packet(contexts, local_stubs=local_stubs)
+        elif local_stubs:
+            from universal_docs_mcp.context_delivery import build_bundle_packet
+
+            context = build_bundle_packet([], local_stubs=local_stubs)
+        else:
+            context = contexts[0] if contexts else ""
+        if local_stubs:
+            receipt["local_stub_used"] = True
+            receipt["local_stub_evidence"] = local_stub_evidence
+        retrieved = bool(context) and bool(contexts or local_stubs)
+        if len(context.encode("utf-8")) > MAX_CONTEXT_BYTES:
+            retrieved = False
+        receipt.update(
+            {
+                "status": "retrieved" if retrieved else "failed",
+                "error": None
+                if retrieved
+                else (last_error or "cache_evidence_missing_or_mismatched"),
+                "query": bundle.plans[0].query,
+                "selection": bundle.plans[0].selection,
+                "context_sha256": hashlib.sha256(context.encode()).hexdigest()
+                if retrieved
+                else None,
+                "cache_evidence": packages[0]["cache_evidence"] if packages else None,
+                "packages": packages,
+            }
+        )
+        _atomic_receipt(receipt_dir, receipt)
+        return (
+            {"context": "DOCS_PREFLIGHT_STATUS=prepared\n" + context}
+            if retrieved
+            else _missing(receipt["error"])
+        )
+    except Exception:
+        receipt.update({"status": "failed", "error": "preflight_failed"})
+        _atomic_receipt(receipt_dir, receipt)
+        return _missing("preflight_failed")
+    finally:
+        for request_path in request_paths:
+            try:
+                request_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+_TECHNICAL_TERMS = re.compile(
+    r"\b(code|coding|debug|implement|package|dependency|api|sdk|migration|library|import|upgrade|install|technical|fix|error|bug|test|pytest|build|lint|refactor|endpoint|schema|async|client|hook|mcp|plugin)\b",
+    re.I,
+)
+_ERROR_PATTERN = re.compile(
+    r"\b(ImportError|ModuleNotFoundError|AttributeError|TypeError|ValidationError|Cannot find module|error\[E0\d+)\b",
+    re.I,
+)
+
+
+def _is_eligible_turn(task: str, root: Path | None = None) -> bool:
+    if _TECHNICAL_TERMS.search(task) or _ERROR_PATTERN.search(task):
+        return True
+    if root is None:
+        return False
+    try:
+        from universal_docs_mcp.lockfile import resolve_project_dependencies
+
+        dependencies = resolve_project_dependencies(root)
+    except (OSError, ValueError):
+        return False
+    lowered = task.lower()
+    return any(
+        re.search(r"(?<![\w@])" + re.escape(alias) + r"(?![\w])", lowered)
+        for dependency in dependencies
+        for alias in {
+            dependency.name.lower(),
+            dependency.name.lower().replace("-", "_"),
+            dependency.name.lower().replace("_", "-"),
+        }
+    )
+
+
+def _post_tool_callback(
+    settings: dict[str, Any],
+    payload: dict[str, Any],
+    seen: set[tuple[str, str, str, str]],
+) -> dict[str, str] | None:
+    output = next(
+        (
+            payload.get(key)
+            for key in ("output", "tool_output", "result")
+            if isinstance(payload.get(key), str)
+        ),
+        "",
+    )
+    if (
+        not output
+        or len(output.encode("utf-8")) > 16 * 1024
+        or not _ERROR_PATTERN.search(output)
+    ):
+        return None
+    session = payload.get("session_id")
+    if not isinstance(session, str) or not session:
+        return None
+    state = _session_state(session)
+    if state is None:
+        return None
+    _cwd, root, _resolution = state
+    from universal_docs_mcp.planner import select_for_error, to_preflight_requests
+
+    bundle = select_for_error(root, error_text=output)
+    if bundle.status != "selected":
+        return None
+    signature = hashlib.sha256(" ".join(output.split()).encode()).hexdigest()
+    fresh = [
+        plan
+        for plan in bundle.plans
+        if (session, plan.package, plan.target_version or "", signature) not in seen
+    ]
+    if not fresh:
+        return None
+    bundle = type(bundle)(
+        bundle.status, bundle.reason, tuple(fresh), bundle.resolution_root_has_manifest
+    )
+    requests = to_preflight_requests(
+        bundle, total_budget_bytes=6144, freshness_mode="allow_cache"
+    )
+    contexts: list[str] = []
+    local_stubs: list[Any] = []
+    receipt_packages: list[dict[str, Any]] = []
+    for plan, request_model in zip(fresh, requests, strict=True):
+        request = request_model.model_dump(mode="json", exclude_none=True)
         request["deadline_ms"] = max(1000, min(settings["timeout_ms"] - 100, 9000))
-        request_path = _request_file(receipt_dir / ".requests", request)
-        child_settings = dict(settings, request_file=str(request_path))
-        raw, error = _read_child(child_settings)
+        request_path = _request_file(
+            _hermes_home() / "receipts" / "universal-docs" / ".requests", request
+        )
+        try:
+            raw, error = _read_child(dict(settings, request_file=str(request_path)))
+        finally:
+            request_path.unlink(missing_ok=True)
         framed = _missing(error) if error else _frame_context(raw)
         context = framed["context"]
         retrieved = (
             "DOCS_PREFLIGHT_STATUS=prepared\n" in context
             or "DOCS_PREFLIGHT_STATUS=prepared_stale\n" in context
         )
-        cache_evidence = (
+        evidence = (
             _cache_evidence(settings["cache_dir"], plan, context) if retrieved else None
         )
-        retrieved = retrieved and cache_evidence is not None
-        receipt.update(
+        stub_evidence = None
+        if not (retrieved and evidence):
+            try:
+                from universal_docs_mcp.local_stubs import extract_local_stubs
+
+                stub = extract_local_stubs(
+                    root,
+                    plan.package,
+                    plan.ecosystem,
+                    plan.target_version,
+                    symbols=plan.selection.get("symbols", ()),
+                )
+            except (OSError, ValueError, TypeError):
+                stub = None
+            if stub is not None:
+                local_stubs.append(stub)
+                stub_evidence = {
+                    "source": stub.source,
+                    "version_binding": stub.version_binding,
+                    "relative_path": stub.relative_path,
+                    "content_bytes": stub.content_bytes,
+                }
+        if retrieved and evidence:
+            contexts.append(context.split("\n", 1)[1])
+            seen.add((session, plan.package, plan.target_version or "", signature))
+        elif stub_evidence:
+            seen.add((session, plan.package, plan.target_version or "", signature))
+        receipt_packages.append(
             {
-                "status": "retrieved" if retrieved else "failed",
-                "error": None
-                if retrieved
-                else (error or "cache_evidence_missing_or_mismatched"),
-                "query": plan.query,
-                "selection": plan.selection,
-                "context_sha256": hashlib.sha256(context.encode()).hexdigest()
-                if retrieved
-                else None,
-                "cache_evidence": cache_evidence,
+                "package": plan.package,
+                "target_version": plan.target_version,
+                "cache_evidence": evidence,
+                "local_stub_evidence": stub_evidence,
+                "status": "retrieved"
+                if (retrieved and evidence) or stub_evidence
+                else "failed",
             }
         )
-        _atomic_receipt(receipt_dir, receipt)
-        return framed if retrieved else _missing(receipt["error"])
-    except Exception:
-        receipt.update({"status": "failed", "error": "preflight_failed"})
-        _atomic_receipt(receipt_dir, receipt)
-        return _missing("preflight_failed")
-    finally:
-        if request_path is not None:
-            try:
-                request_path.unlink()
-            except FileNotFoundError:
-                pass
+    if not contexts and not local_stubs:
+        return None
+    if len(contexts) > 1 or (
+        local_stubs and contexts and "Receipt: UDCTX:" in contexts[0]
+    ):
+        from universal_docs_mcp.context_delivery import build_bundle_packet
+
+        context = build_bundle_packet(contexts, local_stubs=local_stubs)
+    elif local_stubs:
+        from universal_docs_mcp.context_delivery import build_bundle_packet
+
+        context = build_bundle_packet([], local_stubs=local_stubs)
+    else:
+        context = contexts[0]
+    if len(context.encode("utf-8")) > MAX_CONTEXT_BYTES:
+        return None
+    receipt = {
+        "schema": "universal-docs.hermes-consumption/v1",
+        "status": "retrieved",
+        "reason": "post_tool_error",
+        "session_id": session,
+        "error_signature": signature,
+        "packages": receipt_packages,
+        "local_stub_used": bool(local_stubs),
+    }
+    _atomic_receipt(_hermes_home() / "receipts" / "universal-docs", receipt)
+    return {"context": "DOCS_PREFLIGHT_STATUS=prepared\n" + context}
 
 
 def register(ctx: Any) -> None:
@@ -547,6 +799,7 @@ def register(ctx: Any) -> None:
         return
     lock = threading.Lock()
     last_turn_id: str | None = None
+    seen_errors: set[tuple[str, str, str, str]] = set()
 
     def callback(**payload: Any) -> dict[str, str] | None:
         nonlocal last_turn_id
@@ -569,3 +822,16 @@ def register(ctx: Any) -> None:
             lock.release()
 
     ctx.register_hook("pre_llm_call", callback)
+    try:
+        ctx.register_hook(
+            "post_tool_call",
+            lambda **payload: (
+                _post_tool_callback(settings, payload, seen_errors)
+                if settings["mode"] == "native"
+                else None
+            ),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        # Older Hermes hook managers and narrow test doubles expose only the
+        # pre-LLM event; keep their supported registration intact.
+        pass

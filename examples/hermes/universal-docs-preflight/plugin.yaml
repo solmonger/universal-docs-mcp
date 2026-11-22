@@ -6,8 +6,8 @@ author: Hermes Agent
 tags: [documentation, hooks, preflight]
 kind: standalone
 capabilities: [hooks]
-provides_hooks: [pre_llm_call]
-hooks: [pre_llm_call]
+provides_hooks: [pre_llm_call, post_tool_call]
+hooks: [pre_llm_call, post_tool_call]
 config_schema:
   mode:
     type: string
